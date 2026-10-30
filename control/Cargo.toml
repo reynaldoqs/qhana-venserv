@@ -1,0 +1,51 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/protocolo",
+    "crates/nucleo",
+    "crates/agentes",
+    "crates/adb",
+    "crates/modem",
+    "crates/almacen",
+    "crates/lotes",
+    "crates/simulador",
+    "crates/servidor",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "UNLICENSED"
+
+[workspace.dependencies]
+protocolo = { path = "crates/protocolo" }
+nucleo = { path = "crates/nucleo" }
+agentes = { path = "crates/agentes" }
+adb = { path = "crates/adb" }
+modem = { path = "crates/modem" }
+almacen = { path = "crates/almacen" }
+lotes = { path = "crates/lotes" }
+
+anyhow = "1"
+async-trait = "0.1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+axum = { version = "0.7", features = ["ws"] }
+clap = { version = "4", features = ["derive", "env"] }
+futures-util = "0.3"
+regex = "1"
+serialport = { version = "4", default-features = false }
+rusqlite = { version = "0.31", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+thiserror = "1"
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = "0.24"
+tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4"] }
+
+[profile.release]
+lto = "thin"
+strip = true

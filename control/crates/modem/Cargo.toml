@@ -1,0 +1,15 @@
+[package]
+name = "modem"
+description = "Módems USB con comandos AT (Huawei, Quectel, SIMCom…): detección y canal USSD"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+protocolo.workspace = true
+nucleo.workspace = true
+async-trait.workspace = true
+regex.workspace = true
+serde_json.workspace = true
+serialport.workspace = true
+tokio.workspace = true
+tracing.workspace = true

@@ -1,0 +1,175 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Manrope", "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
+
+  /* Paleta: negro #000, gris oscuro #333, gris #646464, gris claro #A7A7A7, blanco #F9F9F9, naranja de marca #E85002. */
+  --color-fondo: #000000;
+  --color-lienzo: #0d0d0d;
+  --color-panel: #1a1a1a;
+  --color-panel-2: #2b2b2b;
+  --color-borde: #3a3a3a;
+  --color-texto: #f9f9f9;
+  --color-tenue: #a7a7a7;
+  --color-acento: #e85002;
+  --color-acento-fuerte: #c10801;
+  --color-acento-texto: #ff7a33; /* acento para texto chico sobre superficies oscuras */
+  --color-sobre-acento: #000000; /* texto sobre fondos naranjas: el blanco da 3.6:1, el negro 5.6:1 */
+
+  /* El naranja es solo de marca y acciones; los estados (en curso, simulada, nuevo, seleccionado) usan info o neutros.
+     Estados en oscuro: tono vivo para texto/puntos y fondo translúcido del mismo tono (no un color sólido aparte). */
+  --color-ok: #3ed598;
+  --color-ok-suave: rgb(62 213 152 / 0.14);
+  --color-aviso: #f5c451;
+  --color-aviso-suave: rgb(245 196 81 / 0.14);
+  --color-error: #ff7b7b;
+  --color-error-suave: rgb(255 123 123 / 0.14);
+  --color-info: #6db3ff;
+  --color-info-suave: rgb(109 179 255 / 0.14);
+  --color-acento-suave: rgb(232 80 2 / 0.18);
+
+  --color-lateral: #0d0d0d;
+  --color-lateral-2: #2b2b2b;
+  --color-lateral-texto: #f9f9f9;
+  --color-lateral-tenue: #a7a7a7;
+
+  --shadow-tarjeta: 0 1px 2px rgb(0 0 0 / 0.3), 0 8px 24px -14px rgb(0 0 0 / 0.5);
+  --shadow-elevada: 0 2px 4px rgb(0 0 0 / 0.35), 0 20px 40px -18px rgb(0 0 0 / 0.7);
+  --shadow-acento: 0 6px 18px -6px rgb(232 80 2 / 0.5);
+
+  --ease-salida: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-resorte: cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    background: var(--color-fondo);
+    color: var(--color-texto);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    font-feature-settings: "cv11", "ss01";
+  }
+
+  /* Foco visible para quien navega con teclado; el mouse no lo dispara. */
+  :where(button, a, select, summary, [role="tab"], [tabindex]):focus-visible {
+    outline: 2px solid var(--color-acento);
+    outline-offset: 2px;
+  }
+
+  ::selection {
+    background: var(--color-acento-suave);
+  }
+
+  /* Barras de desplazamiento discretas. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-borde) transparent;
+  }
+}
+
+
+.lateral-brillo {
+  background: var(--color-lateral);
+}
+
+.degradado-cta {
+  background-image: linear-gradient(135deg, #f16001 0%, #e85002 55%, #d14201 100%);
+}
+
+.degradado-acento {
+  background: var(--color-acento);
+}
+
+@keyframes aparecer {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes entrar-vista {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes brillo {
+  from {
+    background-position: -200% 0;
+  }
+  to {
+    background-position: 200% 0;
+  }
+}
+
+@keyframes respirar {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgb(232 80 2 / 0.35);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgb(232 80 2 / 0);
+  }
+}
+
+.aparecer {
+  animation: aparecer 320ms var(--ease-salida) both;
+}
+
+.entrar-vista {
+  animation: entrar-vista 360ms var(--ease-salida) both;
+}
+
+/* Escalona la entrada de hijos: style="--i: n" en cada uno. */
+.escalonar > * {
+  animation: aparecer 380ms var(--ease-salida) both;
+  animation-delay: calc(var(--i, 0) * 45ms);
+}
+
+.respirar {
+  animation: respirar 2.4s ease-out infinite;
+}
+
+.esqueleto {
+  background: var(--color-panel-2);
+  animation: pulso-esqueleto 1.4s ease-in-out infinite;
+}
+
+@keyframes pulso-esqueleto {
+  50% {
+    opacity: 0.5;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aparecer,
+  .entrar-vista,
+  .escalonar > *,
+  .respirar,
+  .esqueleto {
+    animation: none;
+  }
+  * {
+    transition-duration: 0.01ms !important;
+  }
+}

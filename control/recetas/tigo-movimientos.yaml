@@ -1,0 +1,11 @@
+nombre: tigo-movimientos
+titulo: Últimas transferencias Tigo
+operador: TIGO
+descripcion: Lista las últimas transferencias hechas desde el chip (*66#1# → Ultimos movimientos). Solo consulta.
+modo: pantalla
+accion: consulta
+parametros: []
+pasos:
+  - marcar: "*66#1#"
+    esperar: 'transferencias'
+  - elegir: 'Ultimos movimientos'

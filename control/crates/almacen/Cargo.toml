@@ -1,0 +1,11 @@
+[package]
+name = "almacen"
+description = "Historial en SQLite (rusqlite bundled: funciona en Windows sin instalar nada)"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+protocolo.workspace = true
+rusqlite.workspace = true
+serde_json.workspace = true
+tracing.workspace = true

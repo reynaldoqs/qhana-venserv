@@ -1,0 +1,16 @@
+[package]
+name = "agentes"
+description = "Endpoint WebSocket de los agentes Android y su implementación de CanalUssd"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+protocolo.workspace = true
+nucleo.workspace = true
+async-trait.workspace = true
+axum.workspace = true
+futures-util.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true

@@ -1,0 +1,10 @@
+﻿número;monto;operadora;referencia
+69869869;12;TIGO;Pedido 1001
++591 7881-5232;Bs 5;tigo;Pedido 1002
+69869869;3,00;Tigo;Pedido 1003 (repetido)
+7123;10;TIGO;número corto
+69869869;7.50;TIGO;con centavos
+71227468;10;ENTEL;sin receta Entel
+69869869;20;MOVIL;operador raro
+;5;TIGO;sin número
+69869869;37;TIGO;37 = 20+10+5+2

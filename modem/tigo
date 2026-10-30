@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Lanzador de tigo.py. También responde a los nombres "transferir" y "saldo" (symlinks).
+# Si el usuario puede abrir el puerto del módem (grupo dialout) corre directo;
+# si no, usa un contenedor Docker que solo ve los puertos del módem.
+set -euo pipefail
+DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+NAME="$(basename "$0")"
+ARGS=("$@")
+if [[ "$NAME" == "transferir" || "$NAME" == "saldo" ]]; then ARGS=("$NAME" "$@"); fi
+
+if [[ -r /dev/ttyUSB2 && -w /dev/ttyUSB2 ]]; then
+  exec python3 "$DIR/tigo.py" "${ARGS[@]}"
+fi
+
+IMG="${TIGO_IMG:-freqtradeorg/freqtrade:2026.2}"
+DEVS=()
+for d in /dev/ttyUSB*; do [[ -e "$d" ]] && DEVS+=(--device "$d"); done
+[[ ${#DEVS[@]} -eq 0 ]] && { echo "No veo el módem (/dev/ttyUSB*). ¿Está enchufado?" >&2; exit 1; }
+TTY=(-i); [[ -t 0 && -t 1 ]] && TTY=(-it)
+exec docker run --rm "${TTY[@]}" --user "$(id -u):$(id -g)" \
+  --group-add "$(getent group dialout | cut -d: -f3)" "${DEVS[@]}" \
+  -v "$DIR:/m" -e TIGO_DIR=/m -e TIGO_MAX="${TIGO_MAX:-100}" \
+  --entrypoint python "$IMG" -u /m/tigo.py "${ARGS[@]}"

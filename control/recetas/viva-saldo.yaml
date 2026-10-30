@@ -1,0 +1,15 @@
+nombre: viva-saldo
+titulo: Saldo Viva
+operador: VIVA
+descripcion: Consulta de saldo (*105#). Gratis y solo consulta. Viva responde con el número de la línea, saldo total, principal y datos, y deja un menú abierto ("1. Ver mas / 2. Salir"); el motor cierra la sesión.
+modo: pantalla
+accion: saldo
+parametros: []
+pasos:
+  - marcar: "*105#"
+    esperar: 'SALDO TOTAL'
+salida:
+  linea: '(?m)^\s*(\d{8})\s*$'
+  saldo_total: 'SALDO TOTAL Bs:\s*([\d.]+)'
+  saldo_principal: 'Principal:\s*([\d.]+)'
+  datos: 'DATOS:\s*([\d.]+)'

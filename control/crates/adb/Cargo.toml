@@ -1,0 +1,13 @@
+[package]
+name = "adb"
+description = "Gestor de teléfonos por ADB: adb reverse, cruce serial <-> android_id, provisión"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+protocolo.workspace = true
+nucleo.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true

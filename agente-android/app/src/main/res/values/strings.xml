@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Qhana Agente</string>
+    <string name="accesibilidad_nombre">Qhana Agente · lector USSD</string>
+    <string name="accesibilidad_descripcion">Lee y contesta las ventanas de USSD del sistema para ejecutar los flujos que envía el servidor de control. No lee otras apps.</string>
+</resources>

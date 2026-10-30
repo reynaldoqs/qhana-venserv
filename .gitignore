@@ -1,0 +1,30 @@
+# Rust
+control/target/
+control/datos/
+control/paquete/
+control/escritorio/src-tauri/target/
+control/escritorio/src-tauri/recursos/
+control/escritorio/src-tauri/gen/
+# Node
+node_modules/
+control/ui/dist/
+# Android
+agente-android/.gradle/
+agente-android/.kotlin/
+agente-android/**/build/
+agente-android/local.properties
+# Datos reales y archivo histórico (movimientos, historial, saldos): no se suben
+control/viejo/
+modem/registro/
+modem/viejo/
+modem/.tigo.lock
+modem/__pycache__/
+*.db
+*.db-shm
+*.db-wal
+*.log
+.env
+# Sistema
+.DS_Store
+.idea/
+*.iml

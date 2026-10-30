@@ -1,0 +1,22 @@
+[package]
+name = "simulador"
+description = "agente-simulado: un teléfono falso (2 chips) que habla el protocolo v1. Para desarrollar sin gastar saldo."
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "agente-simulado"
+path = "src/main.rs"
+
+[dependencies]
+protocolo.workspace = true
+nucleo.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+futures-util.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-tungstenite.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true

@@ -1,0 +1,27 @@
+nombre: tigo-transferir
+titulo: Transferir saldo Tigo
+operador: TIGO
+descripcion: Transferencia por única vez. Comisión 0.20 Bs, máximo 5 por día.
+modo: pantalla
+accion: transferir
+limites:
+  por_dia: 5
+  comision: 0.20
+parametros:
+  - { nombre: numero, patron: '^[67]\d{7}$' }
+  - { nombre: monto, opciones: ["1", "2", "5", "10", "20"] }
+pasos:
+  - marcar: "*66#1#"
+    error_si: 'maximo numero de transfer'
+    esperar: 'transferencias'
+  - elegir: 'Transferir por unica vez'
+    esperar: 'numero de destino'
+  - enviar: '{numero}'
+    esperar: 'monto'
+  - elegir: '{monto}\s*Bs'
+    esperar: 'Confirma'
+  - verificar: 'transferir.*\b{monto}(\.00)?\s*Bs a {numero}'
+  - confirmar: 'Si'
+    exito: 'transferido\s+{monto}(\.0+)?\s+a\s+{numero}'
+salida:
+  costo: 'costo de ([\d.]+)'

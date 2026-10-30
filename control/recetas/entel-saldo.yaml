@@ -1,0 +1,15 @@
+nombre: entel-saldo
+titulo: Saldo Entel
+operador: ENTEL
+descripcion: Consulta de saldo (*105#) y del número de la línea (*#66#). Gratis y solo consulta; las dos sesiones se cierran solas. Los chips de Entel no traen su número grabado, así que se lee con *#66#.
+modo: pantalla
+accion: saldo
+parametros: []
+pasos:
+  - marcar: "*105#"
+    esperar: 'Saldo'
+  - marcar: "*#66#"
+    esperar: 'MSISDN'
+salida:
+  saldo_principal: 'BS\s*([\d.,]+)'
+  linea: 'MSISDN:\s*591(\d{8})'

@@ -1,0 +1,13 @@
+{
+  "name": "qhana-escritorio",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "preparar": "scripts/preparar.sh",
+    "dev": "tauri dev",
+    "build": "scripts/preparar.sh && tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

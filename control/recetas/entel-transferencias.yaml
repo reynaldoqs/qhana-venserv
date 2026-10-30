@@ -1,0 +1,15 @@
+nombre: entel-transferencias
+titulo: Últimas transferencias Entel
+operador: ENTEL
+descripcion: Consulta las últimas transferencias del chip Entel (*133# → Consulta de transferencia → Ultimas transferencias). Solo consulta.
+modo: pantalla
+accion: consulta
+parametros: []
+pasos:
+  - marcar: "*133#"
+    esperar: 'Escoja una opcion'
+  - elegir: 'Consulta de transferencia'
+    esperar: 'Ultimas transferencias'
+  - elegir: 'Ultimas transferencias'
+salida:
+  ultima: '^(\d{8,}\s+Bs\s+[\d.]+\s+[\d/]+\s+[\d:]+)'

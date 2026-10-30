@@ -1,0 +1,9 @@
+[package]
+name = "protocolo"
+description = "Mensajes agente <-> control y tipos de la API (contrato docs/protocolo.md v1)"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true

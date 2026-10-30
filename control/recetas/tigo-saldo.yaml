@@ -1,0 +1,15 @@
+nombre: tigo-saldo
+titulo: Saldo Tigo
+operador: TIGO
+descripcion: Consulta de saldo (*105#). Gratis. Modo pantalla porque Tigo deja la sesión abierta y el modo API falla.
+modo: pantalla
+accion: saldo
+parametros: []
+pasos:
+  - marcar: "*105#"
+    esperar: 'Saldo'
+salida:
+  linea: 'Linea:\s*(\d+)'
+  saldo_total: 'Saldo Total:\s*([\d.]+)'
+  saldo_principal: 'Saldo Principal:\s*([\d.]+)'
+  doble_carga: 'Saldo Doble Carga:\s*([\d.]+)'

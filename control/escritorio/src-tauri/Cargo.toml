@@ -1,0 +1,17 @@
+[package]
+name = "qhana-escritorio"
+version = "0.1.0"
+edition = "2021"
+license = "UNLICENSED"
+
+# Proyecto aparte del workspace del control: no se compila con `cargo build` de control/.
+[workspace]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+
+[profile.release]
+strip = true

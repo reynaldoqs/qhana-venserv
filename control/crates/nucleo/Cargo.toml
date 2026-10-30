@@ -1,0 +1,17 @@
+[package]
+name = "nucleo"
+description = "Dominio sin red: canal USSD, registro de dispositivos, eventos, recetas y motor"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+protocolo.workspace = true
+async-trait.workspace = true
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
