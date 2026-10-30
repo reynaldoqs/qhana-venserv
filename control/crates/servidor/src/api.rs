@@ -4,7 +4,8 @@ use crate::error::{ApiError, ApiResult, Cuerpo};
 use crate::{App, VERSION};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{header, HeaderMap, Request, StatusCode};
+use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -15,10 +16,9 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
-use std::path::{Path as RutaFs, PathBuf};
+use std::path::Path as RutaFs;
 use std::sync::Arc;
 use std::time::Duration;
-use tower_http::cors::CorsLayer;
 use tower_http::services::{ServeDir, ServeFile};
 
 type Ctx = State<Arc<App>>;
@@ -59,7 +59,8 @@ pub fn rutas(app: Arc<App>, ui: &RutaFs) -> Router {
         .with_state(app)
         // Los CSV de lotes pueden pesar ~1 MB.
         .layer(axum::extract::DefaultBodyLimit::max(4 * 1024 * 1024))
-        .layer(CorsLayer::permissive());
+        // Sin CORS: la interfaz va por el mismo origen. Un sitio web cualquiera no puede llamar a la API desde el navegador.
+        .layer(middleware::from_fn(solo_mismo_origen));
 
     let indice = ui.join("index.html");
     if indice.is_file() {
@@ -116,16 +117,8 @@ async fn adb_listar(State(app): Ctx) -> Json<Vec<InfoAdb>> {
     Json(app.adb.as_ref().map(|g| g.listar()).unwrap_or_default())
 }
 
-#[derive(Deserialize, Default)]
-struct CuerpoProvisionar {
-    apk: Option<PathBuf>,
-}
-
-async fn adb_provisionar(
-    State(app): Ctx,
-    Path(serial): Path<String>,
-    cuerpo: Option<Json<CuerpoProvisionar>>,
-) -> ApiResult<Value> {
+/// El APK sale solo de la configuración del control (`--apk`): nunca de la petición.
+async fn adb_provisionar(State(app): Ctx, Path(serial): Path<String>) -> ApiResult<Value> {
     let g = app
         .adb
         .clone()
@@ -133,7 +126,7 @@ async fn adb_provisionar(
     if !g.listar().iter().any(|d| d.serial == serial && d.estado == "device") {
         return Err(ApiError::new(StatusCode::NOT_FOUND, "sin_dispositivo", format!("'{serial}' no está listo en ADB")));
     }
-    let apk = cuerpo.and_then(|Json(c)| c.apk).or_else(|| app.apk.clone());
+    let apk = app.apk.clone();
     if let Some(a) = &apk {
         if !a.is_file() {
             return Err(ApiError::parametro(format!("no existe el APK {}", a.display())));
@@ -472,6 +465,34 @@ async fn ejecuciones(State(app): Ctx, Query(q): Query<ConsultaHistorial>) -> Api
         .ejecuciones(limite)
         .map(Json)
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "almacen", e.to_string()))
+}
+
+/// Defensa contra páginas web ajenas que llamen a la API desde el navegador del operador (CSRF, WebSocket desde otro sitio, DNS rebinding):
+/// - `Host` debe ser `localhost` o una IP (un nombre de dominio es la firma de DNS rebinding);
+/// - si hay `Origin` (los navegadores siempre lo mandan en POST y WebSocket), debe ser el propio servidor
+///   (o la interfaz en desarrollo, en :5173). Los agentes y `curl` no mandan `Origin`.
+async fn solo_mismo_origen(cabeceras: HeaderMap, req: Request<axum::body::Body>, siguiente: Next) -> Response {
+    let prohibido = |motivo: &str| ApiError::new(StatusCode::FORBIDDEN, "origen_no_permitido", motivo.to_string()).into_response();
+    let host = cabeceras.get(header::HOST).and_then(|v| v.to_str().ok()).unwrap_or("");
+    if !host_permitido(host) {
+        return prohibido("Host no permitido: usa localhost o la IP del PC");
+    }
+    if let Some(origen) = cabeceras.get(header::ORIGIN).and_then(|v| v.to_str().ok()) {
+        let propio = origen.strip_prefix("http://").is_some_and(|h| h.eq_ignore_ascii_case(host));
+        let desarrollo = ["http://localhost:5173", "http://127.0.0.1:5173"].contains(&origen);
+        if !propio && !desarrollo {
+            return prohibido("Origin no permitido");
+        }
+    }
+    siguiente.run(req).await
+}
+
+fn host_permitido(host: &str) -> bool {
+    let nombre = match host.strip_prefix('[') {
+        Some(v6) => v6.split(']').next().unwrap_or(""),
+        None => host.rsplit_once(':').map_or(host, |(n, _)| n),
+    };
+    nombre.eq_ignore_ascii_case("localhost") || nombre.parse::<std::net::IpAddr>().is_ok()
 }
 
 async fn ws_eventos(ws: WebSocketUpgrade, State(app): Ctx) -> Response {
