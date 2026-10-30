@@ -11,7 +11,7 @@ APK="${APK:-$RAIZ/agente-android/app/build/outputs/apk/debug/app-debug.apk}"
 echo "== control (release)"
 (cd "$CONTROL" && cargo build --release --bin qhana-control)
 echo "== interfaz"
-(cd "$CONTROL/ui" && { [ -d node_modules ] || npm ci; } && npm run build >/dev/null)
+(cd "$CONTROL/ui" && { [ -d node_modules ] || npm install --no-audit --no-fund; } && npm run build >/dev/null)
 [ -f "$APK" ] || { echo "Falta el APK: cd agente-android && ./gradlew :app:assembleDebug" >&2; exit 1; }
 
 rm -rf "$R"; mkdir -p "$R/ui"

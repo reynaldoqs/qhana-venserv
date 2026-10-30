@@ -12,7 +12,7 @@ Push-Location $Control; cargo build --release --bin qhana-control; if ($LASTEXIT
 
 Write-Host "== interfaz"
 Push-Location (Join-Path $Control "ui")
-if (-not (Test-Path node_modules)) { npm ci; if ($LASTEXITCODE) { throw "falló npm ci" } }
+if (-not (Test-Path node_modules)) { npm install --no-audit --no-fund; if ($LASTEXITCODE) { throw "falló npm install" } }
 npm run build | Out-Null; if ($LASTEXITCODE) { throw "falló npm run build" }
 Pop-Location
 
