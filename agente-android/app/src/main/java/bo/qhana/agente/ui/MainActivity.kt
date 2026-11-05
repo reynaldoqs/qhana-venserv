@@ -10,6 +10,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
+import android.text.InputType
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -18,9 +19,11 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 import bo.qhana.agente.BuildConfig
 import bo.qhana.agente.EstadoApp
 import bo.qhana.agente.config.Ajustes
+import bo.qhana.agente.config.UrlControl
 import bo.qhana.agente.servicio.AgenteService
 import bo.qhana.agente.servicio.EstadoDispositivo
 import kotlinx.coroutines.CoroutineScope
@@ -36,7 +39,7 @@ import kotlinx.coroutines.launch
  *
  * Es barata a propósito: fondo negro (ahorra batería en OLED), brillo bajo, no mantiene la pantalla encendida
  * y solo escucha el estado mientras está visible.
- * Acepta extras `url` y `token` (desde adb) para configurar sin tocar el teléfono.
+ * **No** acepta extras de configuración: eso entra solo por [ActividadConfig], protegida para que solo ADB la use.
  */
 class MainActivity : Activity() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -44,6 +47,7 @@ class MainActivity : Activity() {
     private var ultima = EstadoApp.Vista()
 
     private lateinit var ajustes: Ajustes
+    private val prefsUi by lazy { getSharedPreferences("ui", MODE_PRIVATE) }
     private lateinit var cabeceraEstado: TextView
     private lateinit var tarjetaEstado: LinearLayout
     private lateinit var tarjetaChips: LinearLayout
@@ -60,7 +64,6 @@ class MainActivity : Activity() {
         window.statusBarColor = FONDO
         window.navigationBarColor = FONDO
         ajustes = Ajustes(this)
-        aplicarExtras(intent)
         construir()
         pedirPermisos()
         AgenteService.arrancar(this)
@@ -83,33 +86,40 @@ class MainActivity : Activity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        if (aplicarExtras(intent)) {
-            campoUrl.setText(ajustes.url)
-            campoToken.setText(ajustes.token)
-        }
+        // Los extras se ignoran. Si llegamos desde ActividadConfig, la configuración pudo cambiar: mostrar la guardada.
+        campoUrl.setText(ajustes.url)
+        campoToken.setText(ajustes.token)
     }
 
-    /** true si cambió la configuración (y se pidió reconectar). */
-    private fun aplicarExtras(i: Intent?): Boolean {
-        val url = i?.getStringExtra("url")
-        val token = i?.getStringExtra("token")
-        val serial = i?.getStringExtra("adb_serial")?.takeIf { it.isNotBlank() }
-        val cambioSerial = serial != null && serial != ajustes.adbSerial
-        if (serial != null) ajustes.adbSerial = serial
-        if (url.isNullOrBlank() && token.isNullOrBlank()) {
-            // Sin url/token, pero con serial nuevo hay que reconectar para que el próximo `hola` lo lleve.
-            if (cambioSerial) AgenteService.arrancar(this, reconectar = true)
-            return false
-        }
-        if (!url.isNullOrBlank()) ajustes.url = url
-        if (!token.isNullOrBlank()) ajustes.token = token
-        AgenteService.arrancar(this, reconectar = true)
-        return true
-    }
+    private fun permisosQueFaltan() =
+        EstadoDispositivo.PERMISOS.filter { checkSelfPermission(it) != android.content.pm.PackageManager.PERMISSION_GRANTED }
 
     private fun pedirPermisos() {
-        val faltan = EstadoDispositivo.PERMISOS.filter { checkSelfPermission(it) != android.content.pm.PackageManager.PERMISSION_GRANTED }
-        if (faltan.isNotEmpty()) requestPermissions(faltan.toTypedArray(), 1)
+        val faltan = permisosQueFaltan()
+        if (faltan.isEmpty()) return
+        prefsUi.edit().putBoolean(K_PERMISOS_PEDIDOS, true).apply()
+        requestPermissions(faltan.toTypedArray(), 1)
+    }
+
+    /**
+     * Botón "Conceder". Si Android ya no muestra el diálogo (se negó con "No volver a preguntar", o dos veces), se abre la
+     * ficha de la app en Ajustes para concederlos a mano.
+     */
+    private fun conceder() {
+        val faltan = permisosQueFaltan()
+        val yaSePidio = prefsUi.getBoolean(K_PERMISOS_PEDIDOS, false)
+        if (yaSePidio && faltan.none { shouldShowRequestPermissionRationale(it) }) {
+            abrir(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+        } else {
+            pedirPermisos()
+        }
+    }
+
+    /** Abre una pantalla de Ajustes; algunos fabricantes no tienen todas. */
+    private fun abrir(i: Intent, alternativa: Intent? = null) {
+        val ok = runCatching { startActivity(i) }.isSuccess
+        if (!ok && alternativa != null && runCatching { startActivity(alternativa) }.isSuccess) return
+        if (!ok) Toast.makeText(this, "Este teléfono no tiene esa pantalla de ajustes", Toast.LENGTH_SHORT).show()
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
@@ -197,7 +207,10 @@ class MainActivity : Activity() {
         raiz.addView(tarjetaChips)
 
         campoUrl = EditText(this).apply { setText(ajustes.url); hint = "ws://IP:47800/agente"; textSize = 14f; setTextColor(TEXTO); setHintTextColor(TENUE) }
-        campoToken = EditText(this).apply { setText(ajustes.token); hint = "token"; textSize = 14f; setTextColor(TEXTO); setHintTextColor(TENUE) }
+        campoToken = EditText(this).apply {
+            setText(ajustes.token); hint = "token"; textSize = 14f; setTextColor(TEXTO); setHintTextColor(TENUE)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
         cuerpoConfig = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = fondo(TARJETA)
@@ -205,9 +218,16 @@ class MainActivity : Activity() {
             addView(texto("Servidor", 12f, TENUE, true)); addView(campoUrl)
             addView(texto("Token", 12f, TENUE, true)); addView(campoToken)
             addView(boton("Guardar y reconectar", primario = true) {
-                ajustes.url = campoUrl.text.toString()
-                ajustes.token = campoToken.text.toString()
+                val url = campoUrl.text.toString().trim()
+                if (!UrlControl.valida(url)) {
+                    // Inválida: no se guarda nada y queda la anterior.
+                    campoUrl.error = "Debe empezar con ws:// o wss://"
+                    return@boton
+                }
+                ajustes.url = url
+                if (campoToken.text.isNotBlank()) ajustes.token = campoToken.text.toString()
                 AgenteService.arrancar(this@MainActivity, reconectar = true)
+                Toast.makeText(this@MainActivity, "Guardado: reconectando…", Toast.LENGTH_SHORT).show()
             }.also { it.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(12) } })
             addView(texto("ID ${Ajustes.dispositivoId(this@MainActivity)} · ADB ${ajustes.adbSerial ?: "—"}", 11f, TENUE).apply { setPadding(0, dp(12), 0, 0); setTextIsSelectable(true) })
         }
@@ -251,11 +271,21 @@ class MainActivity : Activity() {
                 startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
             },
             if (faltan.isEmpty()) Chequeo(Nivel.OK, "Permisos", "Todos concedidos")
-            else Chequeo(Nivel.ERROR, "Permisos", "Faltan: ${faltan.joinToString()}", "Conceder") { pedirPermisos() },
-            if (bateriaLibre) Chequeo(Nivel.OK, "Batería", "Sin restricciones: Android no la cierra")
+            else Chequeo(Nivel.ERROR, "Permisos", "Faltan: ${faltan.joinToString()}", "Conceder") { conceder() },
+            if (bateriaLibre) Chequeo(Nivel.OK, "Batería", "Sin restricciones: Android no la cierra", "Ajustes") {
+                abrir(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+            }
             else Chequeo(Nivel.AVISO, "Batería", "Android puede cerrarla para ahorrar", "Quitar límite") {
-                startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
+                abrir(
+                    Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")),
+                    alternativa = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS),
+                )
             },
+            v.sesionUssd?.let { id ->
+                Chequeo(Nivel.OK, "USSD", "Sesión abierta (${id.take(8)}). La cierra el control o sola a los 60 s.", "Cancelar") {
+                    AgenteService.cancelarUssd(this)
+                }
+            } ?: Chequeo(Nivel.OK, "USSD", "Sin sesión abierta"),
             when {
                 !conBloqueo && siempreEncendida -> Chequeo(Nivel.OK, "Pantalla", "Encendida con USB: así el sistema no congela el agente")
                 !conBloqueo -> Chequeo(Nivel.AVISO, "Pantalla", "Se apaga: algunos teléfonos congelan el agente y el USSD falla")
@@ -328,6 +358,7 @@ class MainActivity : Activity() {
     }
 
     private companion object {
+        const val K_PERMISOS_PEDIDOS = "permisos_pedidos"
         val FONDO = Color.parseColor("#0D0D0D")
         val TARJETA = Color.parseColor("#1A1A1A")
         val TARJETA_2 = Color.parseColor("#2B2B2B")

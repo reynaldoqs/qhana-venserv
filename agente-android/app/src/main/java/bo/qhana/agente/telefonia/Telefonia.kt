@@ -11,9 +11,12 @@ import android.telephony.ServiceState
 import android.telephony.SubscriptionInfo
 import android.telephony.SubscriptionManager
 import android.telephony.TelephonyManager
+import bo.qhana.agente.protocolo.CodigoError
 import bo.qhana.agente.protocolo.EstadoSim
 import bo.qhana.agente.protocolo.EstadoVoz
 import bo.qhana.agente.protocolo.Sim
+import bo.qhana.agente.ussd.FalloUssd
+import bo.qhana.agente.ussd.ReglasUssd
 
 /** Todo lo que el agente sabe de las SIMs. Las llamadas que requieren permisos fallan en silencio (campo null). */
 @SuppressLint("MissingPermission", "HardwareIds")
@@ -113,11 +116,20 @@ class Telefonia(context: Context) {
         return cuentas.firstOrNull { it.id == subId.toString() || (!iccid.isNullOrBlank() && it.id.startsWith(iccid)) }
     }
 
-    /** Intent para marcar un código USSD por una SIM concreta. */
+    /**
+     * Intent para marcar un código USSD por una SIM concreta. Falla (sin marcar nada) si el código no es un USSD o si
+     * Android no da la cuenta telefónica del chip: sin ella Android usaría la SIM por defecto, o sea, podría mover
+     * dinero desde el chip equivocado (protocolo: "Validaciones del agente antes de marcar").
+     */
     fun intentMarcar(codigo: String, slot: Int, subId: Int): Intent {
+        if (!ReglasUssd.codigoValido(codigo)) {
+            throw FalloUssd(CodigoError.PARAMETRO, "El código no es un USSD (debe cumplir ^[*#][0-9*#]+#$)")
+        }
+        val cuenta = cuentaDeSubId(subId)
+            ?: throw FalloUssd(CodigoError.SIM_INVALIDA, "Android no da la cuenta telefónica del chip del slot $slot (sub_id $subId); no se marca")
         val i = Intent(Intent.ACTION_CALL, Uri.parse("tel:" + Uri.encode(codigo)))
         i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        cuentaDeSubId(subId)?.let { i.putExtra(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, it) }
+        i.putExtra(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, cuenta)
         // Extras que leen distintos fabricantes para elegir el chip.
         for (k in EXTRAS_SLOT) i.putExtra(k, slot)
         i.putExtra("com.android.phone.force.slot", true)

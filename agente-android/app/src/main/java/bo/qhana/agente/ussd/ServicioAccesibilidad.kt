@@ -84,7 +84,7 @@ class ServicioAccesibilidad : AccessibilityService() {
             ?: botonConTexto(raiz, PerfilDialogo.TEXTOS_POSITIVO)
         val negativo = perfil.idsNegativo.firstNotNullOfOrNull { porId(raiz, it) }
             ?: botonConTexto(raiz, PerfilDialogo.TEXTOS_NEGATIVO)
-        val esProgreso = PerfilDialogo.PROGRESO.containsMatchIn(texto) && entrada == null
+        val esProgreso = PerfilDialogo.esProgreso(texto.trim()) && entrada == null
         // Sin botones ni campo no es un diálogo de USSD (otra pantalla del paquete de telefonía).
         if (!esProgreso && entrada == null && positivo == null && negativo == null) return null
         return Dialogo(pkg, perfil.nombre, texto.trim(), esProgreso, entrada, positivo, negativo)
@@ -130,6 +130,12 @@ class ServicioAccesibilidad : AccessibilityService() {
             putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, texto)
         }
         return campo.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+    }
+
+    /** Lo que tiene ahora el campo, leído de nuevo de la ventana (no de la caché de accesibilidad). */
+    fun leerCampo(campo: AccessibilityNodeInfo): String? {
+        runCatching { campo.refresh() }
+        return campo.text?.toString()
     }
 
     /** Click en el nodo o, si no es clickeable, en el primer ancestro que lo sea. */

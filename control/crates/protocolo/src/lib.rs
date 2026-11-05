@@ -30,8 +30,18 @@ pub mod codigos {
     pub const DESCONECTADO: &str = "desconectado";
     /// Agregado por el control: receta inexistente.
     pub const SIN_RECETA: &str = "sin_receta";
-    /// Agregado por el control: la receta es de otro tipo de chip (p. ej. una receta PDA en un chip normal).
+    /// Agregado por el control: la receta es de otro tipo de chip (p. ej. una receta dealer en un chip normal).
     pub const TIPO_CHIP: &str = "tipo_chip";
+    /// Agregado por el control: la API pide token y no vino uno válido.
+    pub const NO_AUTORIZADO: &str = "no_autorizado";
+    /// Agregado por el control: el lote real es igual a otro creado hace poco.
+    pub const DUPLICADO: &str = "duplicado";
+    /// Agregado por el control: la receta no pasa la validación (lleva `errores` dentro de `error`).
+    pub const RECETA_INVALIDA: &str = "receta_invalida";
+    /// Agregado por el control: ya hay una receta con ese `nombre`.
+    pub const EXISTE: &str = "existe";
+    /// Agregado por el control: la receta cambió desde que se leyó (`version_base`).
+    pub const CONFLICTO: &str = "conflicto";
 }
 
 // ───────────────────────────── tipos compartidos ─────────────────────────────
@@ -90,7 +100,8 @@ pub enum ModoUssd {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct EstadoDispositivo {
-    #[serde(default)]
+    /// 0–100. Un agente viejo puede mandar -1 o algo fuera de rango: queda `None`.
+    #[serde(default, deserialize_with = "bateria_tolerante")]
     pub bateria: Option<u8>,
     #[serde(default)]
     pub cargando: Option<bool>,
@@ -347,6 +358,7 @@ pub mod tipos_evento {
     pub const SMS: &str = "sms";
     pub const ADB: &str = "adb";
     pub const RECETA: &str = "receta";
+    pub const RECETA_CAMBIADA: &str = "receta_cambiada";
 }
 
 /// Cuerpo de error de la API: `{"error": {"codigo", "detalle"}}`.
@@ -359,6 +371,27 @@ pub struct CuerpoError {
 pub struct DetalleError {
     pub codigo: String,
     pub detalle: String,
+    /// Solo en `receta_invalida`: `[{paso, campo, mensaje}]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub errores: Option<serde_json::Value>,
+}
+
+/// Batería 0–100; cualquier otro valor (-1, 255, texto) es `None` en vez de romper el mensaje `estado`.
+fn bateria_tolerante<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u8>, D::Error> {
+    let v = Option::<serde_json::Value>::deserialize(d)?;
+    Ok(v.and_then(|v| v.as_f64()).filter(|b| (0.0..=100.0).contains(b)).map(|b| b.round() as u8))
+}
+
+/// Compara dos secretos (tokens) en tiempo constante: no se corta en el primer byte distinto.
+pub fn iguales_tiempo_constante(a: &[u8], b: &[u8]) -> bool {
+    let n = a.len().max(b.len());
+    let mut dif = (a.len() ^ b.len()) as u64;
+    for i in 0..n {
+        let x = a.get(i).copied().unwrap_or(0);
+        let y = b.get(i).copied().unwrap_or(0);
+        dif |= (x ^ y) as u64;
+    }
+    std::hint::black_box(dif) == 0
 }
 
 pub fn ahora_ms() -> i64 {
@@ -405,6 +438,31 @@ mod tests {
         let m: DeAgente =
             serde_json::from_str(r#"{"tipo":"error","codigo":"ocupado"}"#).unwrap();
         assert_eq!(m.req(), None);
+    }
+
+    #[test]
+    fn bateria_fuera_de_rango_no_rompe_estado() {
+        for (j, esperado) in [("-1", None), ("101", None), ("67", Some(67)), ("null", None), ("\"x\"", None), ("80.0", Some(80))] {
+            let t = format!(r#"{{"tipo":"estado","bateria":{j},"cargando":true}}"#);
+            match serde_json::from_str::<DeAgente>(&t).unwrap() {
+                DeAgente::Estado(e) => {
+                    assert_eq!(e.bateria, esperado, "{j}");
+                    assert_eq!(e.cargando, Some(true));
+                }
+                _ => panic!(),
+            }
+        }
+        let sin: DeAgente = serde_json::from_str(r#"{"tipo":"estado"}"#).unwrap();
+        assert!(matches!(sin, DeAgente::Estado(EstadoDispositivo { bateria: None, .. })));
+    }
+
+    #[test]
+    fn compara_tokens() {
+        assert!(iguales_tiempo_constante(b"abc", b"abc"));
+        assert!(!iguales_tiempo_constante(b"abc", b"abd"));
+        assert!(!iguales_tiempo_constante(b"abc", b"abcd"));
+        assert!(!iguales_tiempo_constante(b"", b"a"));
+        assert!(iguales_tiempo_constante(b"", b""));
     }
 
     #[test]

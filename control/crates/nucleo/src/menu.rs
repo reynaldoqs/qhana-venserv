@@ -29,8 +29,16 @@ pub fn opciones(texto: &str) -> Vec<Opcion> {
 
 /// Número de la primera opción cuyo texto coincide **completo** con `patron` (sin importar mayúsculas).
 pub fn elegir(texto: &str, patron: &str) -> Result<Option<String>, regex::Error> {
+    Ok(marcar_opciones(texto, patron)?.into_iter().find(|(_, si)| *si).map(|(o, _)| o.numero))
+}
+
+/// Las opciones del texto y si cada una coincide **completa** con `patron` (la regla de [`elegir`]).
+pub fn marcar_opciones(texto: &str, patron: &str) -> Result<Vec<(Opcion, bool)>, regex::Error> {
     let re = Regex::new(&format!("(?i)^(?:{patron})$"))?;
-    Ok(opciones(texto).into_iter().find(|o| re.is_match(&o.texto)).map(|o| o.numero))
+    Ok(opciones(texto).into_iter().map(|o| {
+        let si = re.is_match(&o.texto);
+        (o, si)
+    }).collect())
 }
 
 #[cfg(test)]

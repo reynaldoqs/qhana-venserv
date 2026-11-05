@@ -7,5 +7,6 @@ edition.workspace = true
 [dependencies]
 protocolo.workspace = true
 rusqlite.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true

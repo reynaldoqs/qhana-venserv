@@ -1,0 +1,37 @@
+nombre: tigo-dealer-recargar
+nombres_anteriores: [tigo-pda-recargar]
+titulo: Recarga de crédito dealer
+operador: TIGO
+descripcion: Recarga de crédito a un número Tigo desde un chip Tigo dealer con *555# → 3 Recarga Tigo → 2 Recarga a otro numero → monto en Bs → número → PIN. Gasta el saldo Tigo Money del chip. El PIN se toma del guardado en el chip (o se escribe al ejecutar). MUEVE DINERO al enviar el PIN; solo en chips marcados dealer.
+modo: pantalla
+accion: recargar
+chip_tipo: dealer
+parametros:
+  - { nombre: numero, patron: '^[67]\d{7}$', descripcion: Número Tigo del cliente }
+  # Bs enteros o con 2 decimales, como lo pide el menú ("desde 0.20 ctvos."): 0.20, 1.50, 5. Con 2 decimales
+  # exactos para poder verificar el monto en la confirmación sin ambigüedad (1.5 se escribe 1.50).
+  - { nombre: monto, patron: '^([1-9]\d{0,2}(\.\d{2})?|0\.(0[1-9]|[1-9]\d))$', descripcion: Monto en Bs (p. ej. 1.50) }
+  - { nombre: pin, patron: '^\d{4,8}$', secreto: true, descripcion: PIN del chip dealer }
+# Pantallas medidas el 2026-11-03 (chip 77716151, recarga real de Bs 0.20 a 62478239).
+pasos:
+  - marcar: "*555#"
+    esperar: 'Tigo Money'
+  - elegir: 'Recarga Tigo'
+    esperar: 'Recarga a otro numero'
+  - elegir: 'Recarga a otro numero'
+    esperar: 'monto'
+  - enviar: "{monto}"
+    esperar: 'numero Tigo'
+  - enviar: "{numero}"
+    esperar: 'PIN'
+  # "Deseas comprar recarga por Bs 0.20  para el 62478239. Introduce tu PIN para confirmar:". Si el monto o el
+  # número no son los pedidos, se cancela sin enviar el PIN. `(\.00)?` acepta 2 → 2.00 (y no 2 → 20.00).
+  - verificar: 'recarga por Bs\.?\s*{monto}(\.00)?\s+para el {numero}\b'
+  - enviar: "{pin}"
+    mueve_dinero: true
+    error_si: 'incorrect|invalid|insuficiente|no se pudo|no pudo|rechaz|bloque|error'
+    exito: 'Recarga Tigo por Bs'
+salida:
+  # "Recarga Tigo por Bs 0.20. Tu saldo total Bs 11.06. Factura: …"
+  monto_bs: 'Recarga Tigo por Bs\.?\s*(\d+(?:[.,]\d{1,2})?)'
+  saldo_dealer: 'saldo total[^\n]*?Bs\.?\s*(\d+(?:[.,]\d{1,2})?)'

@@ -1,13 +1,15 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { Icono, type NombreIcono } from "./componentes/iconos";
 import { useConexion } from "./api/eventos";
-import { Punto, ProveedorToast, cx } from "./componentes/base";
+import { Aviso, Boton, Campo, Punto, ProveedorToast, Tarjeta, cx } from "./componentes/base";
+import { api, mensajeError, sesion } from "./api/cliente";
 import { Paleta } from "./componentes/Paleta";
 import { Search } from "./componentes/iconos";
 import { useDispositivos } from "./util/datos";
 import { Panel } from "./vistas/Panel";
 import { ConsolaUssd } from "./vistas/ConsolaUssd";
-import { Recetas } from "./vistas/Recetas";
+import { Recetas } from "./vistas/recetas/Recetas";
+import { frena } from "./util/guardia";
 import { Mensajes } from "./vistas/Mensajes";
 import { Actividad } from "./vistas/Actividad";
 import { Manual } from "./vistas/Manual";
@@ -33,7 +35,16 @@ function useVista(): [Vista, string, (v: Vista, sub?: string) => void] {
   };
   const [v, setV] = useState<[Vista, string]>(leer);
   useEffect(() => {
-    const f = () => setV(leer());
+    let actual = location.hash;
+    const f = () => {
+      // Una vista con cambios sin guardar puede frenar la salida: el hash vuelve atrás sin cambiar de vista.
+      if (frena(location.hash)) {
+        history.replaceState(null, "", actual || "#");
+        return;
+      }
+      actual = location.hash;
+      setV(leer());
+    };
     window.addEventListener("hashchange", f);
     return () => window.removeEventListener("hashchange", f);
   }, []);
@@ -41,10 +52,67 @@ function useVista(): [Vista, string, (v: Vista, sub?: string) => void] {
 }
 
 export default function App() {
+  const auth = useSyncExternalStore(sesion.suscribir, sesion.estado);
+  // Al arrancar se pregunta si el control pide token (solo cuando se entra desde otra máquina, modo Wi-Fi).
+  useEffect(() => {
+    api
+      .salud()
+      .then((s) => {
+        if (s.requiere_token && !sesion.estado().token) sesion.pedir();
+      })
+      .catch(() => {
+        /* sin control: la propia app muestra "Sin conexión" */
+      });
+  }, []);
+  return <ProveedorToast>{auth.pide ? <PantallaToken rechazado={auth.rechazado} /> : <Aplicacion />}</ProveedorToast>;
+}
+
+/** El control escucha en la red y pide token: se escribe una vez y queda guardado en este navegador. */
+function PantallaToken({ rechazado }: { rechazado: boolean }) {
+  const [token, setToken] = useState("");
+  const [probando, setProbando] = useState(false);
+  const [error, setError] = useState<string | null>(rechazado ? "El control rechazó el token guardado. Escríbelo de nuevo." : null);
+  const entrar = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const t = token.trim();
+    if (!t) return;
+    setProbando(true);
+    setError(null);
+    sesion.fijar(t);
+    try {
+      await api.dispositivos(); // si no vale, responde 401 y vuelve a esta pantalla
+    } catch (err) {
+      setError(mensajeError(err));
+    } finally {
+      setProbando(false);
+    }
+  };
   return (
-    <ProveedorToast>
-      <Aplicacion />
-    </ProveedorToast>
+    <main className="min-h-full grid place-items-center bg-fondo p-4">
+      <Tarjeta className="w-full max-w-sm p-6 entrar-vista">
+        <div className="size-12 rounded-2xl bg-acento text-sobre-acento grid place-items-center font-extrabold text-lg shadow-acento mb-5">Q</div>
+        <h1 className="text-xl font-extrabold tracking-tight">Token de acceso</h1>
+        <p className="text-sm text-tenue mt-1">
+          El control está abierto a la red y pide el token de la API (<span className="font-mono">--api-token</span>). Se guarda en este
+          navegador.
+        </p>
+        <form onSubmit={entrar} className="mt-5 space-y-3">
+          <Campo
+            etiqueta="Token"
+            type="password"
+            autoComplete="current-password"
+            autoFocus
+            value={token}
+            onChange={(e) => setToken(e.target.value)}
+            className="font-mono"
+          />
+          {error && <Aviso>{error}</Aviso>}
+          <Boton type="submit" variante="primario" className="w-full" cargando={probando} disabled={!token.trim()}>
+            Entrar
+          </Boton>
+        </form>
+      </Tarjeta>
+    </main>
   );
 }
 
@@ -106,7 +174,7 @@ function Aplicacion() {
                 aria-current={activo ? "page" : undefined}
                 className={cx(
                   "group relative size-12 mb-2 rounded-2xl grid place-items-center transition-colors duration-200",
-                  activo ? "text-texto" : "text-lateral-tenue hover:text-white",
+                  activo ? "text-texto" : "text-lateral-tenue hover:text-lateral-texto",
                 )}
               >
                 <Icono nombre={n.icono} className="size-[22px] transition-transform duration-300 ease-resorte group-hover:scale-110" />
@@ -121,10 +189,7 @@ function Aplicacion() {
           })}
         </nav>
 
-        <div
-          className="group relative mt-auto size-12 rounded-2xl grid place-items-center"
-          aria-label={conexion === "conectado" ? "Control en línea" : "Sin conexión"}
-        >
+        <div className="group relative mt-auto size-12 rounded-2xl grid place-items-center" aria-hidden>
           <Punto tono={estadoConexion} pulso={conexion !== "conectado"} />
           <span className="pointer-events-none absolute left-full ml-4 z-50 whitespace-nowrap rounded-xl bg-panel-2 px-3 py-1.5 text-xs font-semibold opacity-0 shadow-elevada transition-opacity duration-200 group-hover:opacity-100">
             {conexion === "conectado" ? "Control en línea" : conexion === "conectando" ? "Conectando…" : "Sin conexión con el control"}
@@ -136,7 +201,7 @@ function Aplicacion() {
         <main className="flex-1 overflow-y-auto md:m-3 md:ml-0 md:rounded-[2rem] bg-lienzo pb-20 md:pb-0">
           <div className="max-w-[88rem] mx-auto px-5 md:px-10 py-7 min-h-full flex flex-col">
             <div className="flex items-center justify-between gap-3 mb-6">
-              <span className="text-[10px] uppercase tracking-[0.18em] text-tenue">Qhana · {actual.titulo}</span>
+              <span className="text-[11px] uppercase tracking-[0.18em] text-tenue">Qhana · {actual.titulo}</span>
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => setPaleta(true)}
@@ -147,6 +212,8 @@ function Aplicacion() {
                   <kbd className="hidden sm:inline rounded-md bg-panel-2 px-1.5 py-0.5 text-[11px]">⌘K</kbd>
                 </button>
                 <span
+                  role="status"
+                  aria-live="polite"
                   className="inline-flex items-center gap-2 h-9 px-4 rounded-full bg-panel text-xs font-semibold tabular-nums"
                   title={`${enLinea} de ${lista.length} teléfonos en línea`}
                 >
@@ -154,6 +221,7 @@ function Aplicacion() {
                   {conexion === "conectado" ? "En línea" : conexion === "conectando" ? "Conectando…" : "Sin conexión"}
                   <span className="text-tenue font-medium">
                     {enLinea}/{lista.length}
+                    <span className="sr-only"> teléfonos en línea</span>
                   </span>
                 </span>
               </div>
@@ -170,7 +238,7 @@ function Aplicacion() {
               )}
               {vista === "lotes" && <Lotes ruta={sub} ir={(r) => ir("lotes", r)} dispositivos={lista} />}
               {vista === "ussd" && <ConsolaUssd dispositivos={lista} inicial={consolaInicial} />}
-              {vista === "recetas" && <Recetas dispositivos={lista} />}
+              {vista === "recetas" && <Recetas ruta={sub} ir={(r) => ir("recetas", r)} dispositivos={lista} />}
               {vista === "sms" && <Mensajes dispositivos={lista} inicial={consolaInicial?.dispositivo} />}
               {vista === "actividad" && <Actividad />}
               {vista === "manual" && <Manual seccion={sub} ir={(r) => ir("manual", r)} />}
@@ -186,12 +254,12 @@ function Aplicacion() {
             onClick={() => ir(n.id)}
             aria-current={vista === n.id ? "page" : undefined}
             className={cx(
-              "flex-1 flex flex-col items-center gap-1 pt-2.5 pb-2 text-[10px] font-medium transition-colors",
+              "flex-1 min-w-0 flex flex-col items-center gap-1 pt-2.5 pb-2 text-[11px] leading-tight font-medium transition-colors",
               vista === n.id ? "text-texto" : "text-tenue",
             )}
           >
             <Icono nombre={n.icono} className="size-5" />
-            {n.titulo.replace("Consola ", "")}
+            <span className="truncate max-w-full">{n.titulo.replace("Consola ", "")}</span>
           </button>
         ))}
       </nav>

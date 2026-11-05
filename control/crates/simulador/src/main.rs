@@ -3,6 +3,8 @@
 //!
 //!     agente-simulado --id sim-1 --saldo 14
 //!     agente-simulado --id sim-2 --chip2 entel --limite-diario 0   # todo transferir topa el límite
+//!     agente-simulado --pin-dealer 4321 --saldo-dealer 50             # chip 1 es Tigo dealer (*555#)
+//!     agente-simulado --chip2 entel --entel-dealer                    # chip 2 es Entel dealer (*133*número*050#)
 
 use clap::Parser;
 use futures_util::{SinkExt, StreamExt};
@@ -30,6 +32,27 @@ struct Args {
     /// Transferencias permitidas por día
     #[arg(long, default_value_t = 5)]
     limite_diario: u32,
+    /// Números de los chips 1 y 2. Con un teléfono real conectado al mismo control, usar otros: los chips
+    /// simulados no tienen ICCID y el control los confundiría por número con los reales.
+    #[arg(long, default_value = "78815232")]
+    numero1: String,
+    #[arg(long, default_value = "69759675")]
+    numero2: String,
+    /// Hace del chip 1 un Tigo dealer con este PIN para `*555#`
+    #[arg(long)]
+    pin_dealer: Option<String>,
+    /// Saldo de dealer del chip 1 (con --pin-dealer)
+    #[arg(long, default_value_t = 50.0)]
+    saldo_dealer: f64,
+    /// Número del chip 2 cuando es Entel
+    #[arg(long, default_value = "71227468")]
+    numero_entel: String,
+    /// Hace del chip 2 (con --chip2 entel) un Entel dealer que acepta *133*número*monto#
+    #[arg(long)]
+    entel_dealer: bool,
+    /// Saldo de dealer del chip 2 Entel (con --entel-dealer)
+    #[arg(long, default_value_t = 50.0)]
+    saldo_dealer_entel: f64,
     /// Demora simulada de la red por paso (ms)
     #[arg(long, default_value_t = 700)]
     retardo_ms: u64,
@@ -58,7 +81,8 @@ impl Telefono {
                     sub_id: 4 + i as i64,
                     operador: op.into(),
                     mcc_mnc: mccmnc.into(),
-                    iccid: Some(format!("89591030000000000{i}")),
+                    // Sale del número: dos simuladores con números distintos son chips distintos para el control.
+                    iccid: Some(format!("895910300{}{i}", l.linea)),
                     numero: Some(l.linea.clone()),
                     estado: "listo".into(),
                     voz: Some("en_servicio".into()),
@@ -209,16 +233,23 @@ async fn main() {
         .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();
     let args = Args::parse();
-    let mut l1 = LineaSimulada::tigo("78815232", args.saldo);
+    let mut l1 = LineaSimulada::tigo(&args.numero1, args.saldo);
     l1.limite_diario = args.limite_diario;
+    l1.pin_dealer = args.pin_dealer.clone();
+    l1.saldo_dealer = args.saldo_dealer;
     let mut lineas = vec![l1];
     match args.chip2.as_str() {
         "tigo" => {
-            let mut l = LineaSimulada::tigo("69759675", 8.0);
+            let mut l = LineaSimulada::tigo(&args.numero2, 8.0);
             l.limite_diario = args.limite_diario;
             lineas.push(l);
         }
-        "entel" => lineas.push(LineaSimulada::entel("71227468", 0.0)),
+        "entel" => {
+            let mut l = LineaSimulada::entel(&args.numero_entel, 0.0);
+            l.dealer_entel = args.entel_dealer;
+            l.saldo_dealer = args.saldo_dealer_entel;
+            lineas.push(l);
+        }
         _ => {}
     }
     let sms = vec![Sms {

@@ -48,6 +48,8 @@ impl Columna {
 pub struct FilaCsv {
     pub linea: u32,
     pub valores: BTreeMap<Columna, String>,
+    /// La fila no se puede leer con seguridad (p. ej. más campos que el encabezado): queda inválida.
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -124,7 +126,9 @@ fn registros(texto: &str, sep: char) -> Vec<(u32, Vec<String>)> {
 }
 
 /// Lee el CSV. Error si está vacío, si faltan columnas obligatorias o si supera [`MAX_FILAS`].
-pub fn leer(texto: &str) -> Result<Csv, String> {
+/// Con `requiere_operador = false` (lote de un chip) basta `numero,monto`, y sin encabezado el orden es
+/// `numero, monto, referencia`.
+pub fn leer(texto: &str, requiere_operador: bool) -> Result<Csv, String> {
     let texto = texto.trim_start_matches('\u{feff}');
     let sep = detectar_separador(texto);
     let regs = registros(texto, sep);
@@ -136,7 +140,7 @@ pub fn leer(texto: &str) -> Result<Csv, String> {
     let con_encabezado = mapeo.iter().any(|m| m.is_some());
     let (mapeo, datos) = if con_encabezado {
         for req in [Columna::Numero, Columna::Monto, Columna::Operador] {
-            if !mapeo.contains(&Some(req)) {
+            if !mapeo.contains(&Some(req)) && (requiere_operador || req != Columna::Operador) {
                 return Err(format!(
                     "al CSV le falta la columna '{}' (encabezados: {})",
                     req.nombre(),
@@ -147,7 +151,11 @@ pub fn leer(texto: &str) -> Result<Csv, String> {
         (mapeo, &regs[1..])
     } else {
         // Sin encabezado: numero, monto, operador, accion, referencia.
-        let orden = [Columna::Numero, Columna::Monto, Columna::Operador, Columna::Accion, Columna::Referencia];
+        let orden: &[Columna] = if requiere_operador {
+            &[Columna::Numero, Columna::Monto, Columna::Operador, Columna::Accion, Columna::Referencia]
+        } else {
+            &[Columna::Numero, Columna::Monto, Columna::Referencia]
+        };
         (orden.iter().map(|c| Some(*c)).collect(), &regs[..])
     };
 
@@ -161,6 +169,13 @@ pub fn leer(texto: &str) -> Result<Csv, String> {
     let filas = datos
         .iter()
         .map(|(linea, campos)| {
+            // Más campos (con algo escrito) que columnas: nunca se descartan en silencio. El caso típico es
+            // `69869869,12,50`, un monto con coma decimal sin comillas, que se leería como 12.
+            let usados = campos.iter().rposition(|c| !c.is_empty()).map_or(0, |i| i + 1);
+            let error = (usados > mapeo.len()).then(|| {
+                let de = if con_encabezado { "el encabezado" } else { "se esperaban" };
+                format!("la fila tiene {usados} campos y {de} {} (¿un monto con coma sin comillas?)", mapeo.len())
+            });
             let mut valores = BTreeMap::new();
             for (i, v) in campos.iter().enumerate() {
                 if let Some(Some(col)) = mapeo.get(i) {
@@ -171,7 +186,7 @@ pub fn leer(texto: &str) -> Result<Csv, String> {
                     }
                 }
             }
-            FilaCsv { linea: *linea, valores }
+            FilaCsv { linea: *linea, valores, error }
         })
         .collect();
     Ok(Csv { separador: sep, con_encabezado, filas })
@@ -187,7 +202,7 @@ mod tests {
 
     #[test]
     fn coma_con_encabezado_y_comillas() {
-        let c = leer("numero,monto,operador,accion,referencia\n69869869,\"12,00\",TIGO,,\"Pedido \"\"A\"\", 1\"\n").unwrap();
+        let c = leer("numero,monto,operador,accion,referencia\n69869869,\"12,00\",TIGO,,\"Pedido \"\"A\"\", 1\"\n", true).unwrap();
         assert_eq!(c.separador, ',');
         assert!(c.con_encabezado);
         assert_eq!(c.filas.len(), 1);
@@ -200,7 +215,7 @@ mod tests {
     #[test]
     fn punto_y_coma_bom_alias_y_vacias() {
         let t = "\u{feff}Teléfono;Importe;Compañía\r\n+591 7881-5232;Bs 12;tigo\r\n\r\n;;\r\n69869869;12,00;Tigo\r\n";
-        let c = leer(t).unwrap();
+        let c = leer(t, true).unwrap();
         assert_eq!(c.separador, ';');
         assert_eq!(c.filas.len(), 2);
         assert_eq!(v(&c.filas[0], Columna::Numero), "+591 7881-5232");
@@ -211,7 +226,7 @@ mod tests {
 
     #[test]
     fn sin_encabezado() {
-        let c = leer("69869869;12;TIGO\n78815232;5;TIGO;transferir;x\n").unwrap();
+        let c = leer("69869869;12;TIGO\n78815232;5;TIGO;transferir;x\n", true).unwrap();
         assert!(!c.con_encabezado);
         assert_eq!(c.filas.len(), 2);
         assert_eq!(c.filas[0].linea, 1);
@@ -220,14 +235,35 @@ mod tests {
 
     #[test]
     fn errores_claros() {
-        assert!(leer("").unwrap_err().contains("vacío"));
-        assert!(leer("numero,monto\n1,2\n").unwrap_err().contains("operador"));
-        assert!(leer("numero,monto,operador\n").unwrap_err().contains("filas"));
+        assert!(leer("", true).unwrap_err().contains("vacío"));
+        assert!(leer("numero,monto\n1,2\n", true).unwrap_err().contains("operador"));
+        assert!(leer("numero,monto,operador\n", true).unwrap_err().contains("filas"));
+        // Lote de un chip: basta numero,monto (con o sin encabezado).
+        let c = leer("numero,monto\n69869869,1.50\n", false).unwrap();
+        assert_eq!(v(&c.filas[0], Columna::Monto), "1.50");
+        let c = leer("69869869,1.50,Pedido 1\n", false).unwrap();
+        assert_eq!(v(&c.filas[0], Columna::Referencia), "Pedido 1");
+    }
+
+    #[test]
+    fn mas_campos_que_el_encabezado_es_error() {
+        // Un chip: `numero,monto` y un monto con coma sin comillas.
+        let c = leer("numero,monto\n69869869,12,50\n69869869,\"12,50\"\n70000000,5,\n", false).unwrap();
+        assert_eq!(c.filas[0].error.as_deref(), Some("la fila tiene 3 campos y el encabezado 2 (¿un monto con coma sin comillas?)"));
+        assert_eq!(c.filas[1].error, None, "con comillas está bien");
+        assert_eq!(v(&c.filas[1], Columna::Monto), "12,50");
+        assert_eq!(c.filas[2].error, None, "un separador de más al final, vacío, no es un campo");
+        // Por operador, con `;`.
+        let c = leer("numero;monto;operador\n69869869;12;TIGO;x\n", true).unwrap();
+        assert!(c.filas[0].error.as_deref().unwrap().starts_with("la fila tiene 4 campos y el encabezado 3"));
+        // Sin encabezado: más de las 5 columnas conocidas.
+        let c = leer("69869869;12;TIGO;transferir;pedido;sobra\n", true).unwrap();
+        assert!(c.filas[0].error.as_deref().unwrap().contains("6 campos y se esperaban 5"));
     }
 
     #[test]
     fn salto_de_linea_dentro_de_comillas() {
-        let c = leer("numero,monto,operador,referencia\n69869869,5,TIGO,\"dos\nlineas\"\n78815232,1,TIGO,x\n").unwrap();
+        let c = leer("numero,monto,operador,referencia\n69869869,5,TIGO,\"dos\nlineas\"\n78815232,1,TIGO,x\n", true).unwrap();
         assert_eq!(c.filas.len(), 2);
         assert_eq!(v(&c.filas[0], Columna::Referencia), "dos\nlineas");
         assert_eq!(c.filas[1].linea, 4);

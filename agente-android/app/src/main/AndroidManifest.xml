@@ -35,6 +35,16 @@
             </intent-filter>
         </activity>
 
+        <!-- Configuración por ADB (url, token, adb_serial, reconectar). Protegida con DUMP, que tiene `adb shell` y no las
+             apps comunes: ninguna otra app del teléfono puede apuntar el agente a otro servidor. Sin interfaz. -->
+        <activity
+            android:name=".ui.ActividadConfig"
+            android:exported="true"
+            android:permission="android.permission.DUMP"
+            android:theme="@android:style/Theme.NoDisplay"
+            android:excludeFromRecents="true"
+            android:noHistory="true" />
+
         <service
             android:name=".servicio.AgenteService"
             android:exported="false"

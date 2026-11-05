@@ -2,7 +2,10 @@
 # Prueba de humo de la API contra el agente simulado (NUNCA contra un teléfono real: hace transferencias).
 #   ./target/debug/qhana-control --sin-adb &
 #   ./target/debug/agente-simulado --id sim-1 --saldo 14 --retardo-ms 100 &
-#   ./target/debug/agente-simulado --id sim-2 --chip2 entel --limite-diario 0 --retardo-ms 100 &
+#   ./target/debug/agente-simulado --id sim-2 --chip2 entel --limite-diario 0 --retardo-ms 100 --numero1 71111111 --numero2 72222222 &
+# (sim-2 con otros números: el control identifica el chip por su número y si no, compartirían el "agotado").
+# Con otro puerto: qhana-control --escuchar 127.0.0.1:47900 …, agente-simulado --url ws://127.0.0.1:47900/agente …,
+# y A=http://127.0.0.1:47900/api scripts/prueba-humo.sh
 #   scripts/prueba-humo.sh
 set -u
 A=${A:-http://127.0.0.1:47800/api}
@@ -36,7 +39,7 @@ r=$(post ussd/iniciar '{"x":1}')
 espera "cuerpo malo → 400 parametro" "$(codigo "$r")/$(cuerpo "$r" | campo "d['error']['codigo']")" 400/parametro
 
 echo "== Recetas"
-espera "lista de recetas" "$(curl -s $A/recetas | campo "sorted(x['nombre'] for x in d)")" "['entel-transferencias', 'tigo-movimientos', 'tigo-saldo', 'tigo-transferir']"
+espera "recetas de la prueba cargadas" "$(curl -s $A/recetas | campo "{'entel-transferencias','tigo-movimientos','tigo-saldo','tigo-transferir'} <= {x['nombre'] for x in d}")" True
 r=$(post recetas/tigo-saldo/ejecutar "{\"dispositivo\":\"$D1\",\"slot\":0}")
 espera "tigo-saldo → ok + salida" "$(cuerpo "$r" | campo "(d['estado'], d['salida'].get('linea'))")" "('ok', '78815232')"
 antes=$(cuerpo "$(post recetas/tigo-saldo/ejecutar "{\"dispositivo\":\"$D1\",\"slot\":0}")" | campo "d['salida']['saldo_principal']")
@@ -70,7 +73,7 @@ CSV=$(printf '\xef\xbb\xbfTeléfono;Monto (Bs);Operadora;Ref\n+591 6986-9869;12,
 r=$(post lotes/validar "{\"csv\":$CSV,\"consultar_saldos\":true}")
 espera "validar → 200" "$(codigo "$r")" 200
 espera "resumen (filas, válidas, avisos, inválidas)" "$(cuerpo "$r" | campo "(d['resumen']['filas'],d['resumen']['validas'],d['resumen']['con_avisos'],d['resumen']['invalidas'])")" "(5, 2, 2, 3)"
-espera "12 Bs → envíos [10, 2] con plan" "$(cuerpo "$r" | campo "(d['filas'][0]['envios'], len(d['filas'][0]['plan']))")" "([10, 2], 2)"
+espera "12 Bs → envíos [10, 2] con plan" "$(cuerpo "$r" | campo "([int(x) for x in d['filas'][0]['envios']], len(d['filas'][0]['plan']))")" "([10, 2], 2)"
 espera "ENTEL sin receta de transferir" "$(cuerpo "$r" | campo "any('no hay receta de transferir para ENTEL' in e for e in d['filas'][2]['errores'])")" True
 espera "centavos → error" "$(cuerpo "$r" | campo "any('centavos' in e for e in d['filas'][4]['errores'])")" True
 espera "saldos consultados (chips TIGO con saldo)" "$(cuerpo "$r" | campo "all(c['saldo'] is not None for c in d['chips'] if c['operador']=='TIGO')")" True
@@ -85,7 +88,7 @@ L=$(cuerpo "$r" | campo "d['id']")
 espera "crear simulado → listo, 3 omitidas" "$(cuerpo "$r" | campo "(d['estado'], d['simular'], d['progreso']['omitidas'])")" "('listo', True, 3)"
 espera "iniciar → en_curso" "$(cuerpo "$(post lotes/$L/iniciar '{}')" | campo "d['estado']")" en_curso
 espera "simulado termina" "$(esperar_lote $L)" terminado
-espera "filas simuladas" "$(curl -s $A/lotes/$L | campo "(d['progreso']['simulado'], d['progreso']['enviado_bs'])")" "(2, 0)"
+espera "filas simuladas" "$(curl -s $A/lotes/$L | campo "(d['progreso']['simulado'], int(d['progreso']['enviado_bs']))")" "(2, 0)"
 espera "simulado no tocó el saldo conocido" "$(curl -s $A/chips | campo "[c['saldo'] for c in d if c['dispositivo']=='$D1' and c['slot']==0][0]")" "$saldo_d1"
 
 # Real contra los simulados: el chip de $D2 tiene límite 0 → el operador lo bloquea y se reasigna.
@@ -94,7 +97,7 @@ L2=$(cuerpo "$(post lotes "{\"nombre\":\"humo real\",\"csv\":$REAL}")" | campo "
 post lotes/$L2/iniciar '{}' >/dev/null
 espera "otro iniciar mientras corre → 409" "$(codigo "$(post lotes/$L2/iniciar '{}')")" 409
 espera "real termina" "$(esperar_lote $L2)" terminado
-espera "3 filas ok, 6 Bs, 0.80 de comisión" "$(curl -s $A/lotes/$L2 | campo "(d['progreso']['ok'], d['progreso']['enviado_bs'], d['progreso']['comision_bs'])")" "(3, 6, 0.8)"
+espera "3 filas ok, 6 Bs, 0.80 de comisión" "$(curl -s $A/lotes/$L2 | campo "(d['progreso']['ok'], int(d['progreso']['enviado_bs']), d['progreso']['comision_bs'])")" "(3, 6, 0.8)"
 espera "chip con límite del operador → agotado" "$(curl -s $A/chips | campo "[(c['agotado_hoy'],c['cupo_hoy']) for c in d if c['dispositivo']=='$D2' and c['slot']==0][0]")" "(True, 0)"
 espera "nada pendiente → 409" "$(cuerpo "$(post lotes/$L2/iniciar '{}')" | campo "d['error']['codigo']")" nada_pendiente
 espera "pausar terminado → 409" "$(codigo "$(post lotes/$L2/pausar '{}')")" 409
@@ -102,9 +105,24 @@ csv=$(curl -s "$A/lotes/$L2/resultado.csv")
 espera "resultado.csv: encabezado" "$(printf '%s' "$csv" | head -1 | tr -d '\r' | sed 's/^\xef\xbb\xbf//')" "fila,numero,operador,accion,monto,referencia,estado,enviado_bs,comision_bs,envios_ok,envios_total,chips,detalle,hora"
 espera "resultado.csv: 3 filas ok" "$(printf '%s' "$csv" | grep -c ',ok,')" 3
 espera "resultado.csv con ;" "$(curl -s "$A/lotes/$L2/resultado.csv?separador=;" | sed -n 2p | cut -d';' -f7)" ok
-espera "lista de lotes sin filas" "$(curl -s $A/lotes | campo "(len(d)>=2, all('filas' not in l for l in d))")" "(True, True)"
-L3=$(cuerpo "$(post lotes "{\"csv\":$REAL}")" | campo "d['id']")
+espera "lista de lotes sin filas" "$(curl -s $A/lotes | campo "(len(d['lotes']), all('filas' not in l for l in d['lotes']), d['total'])")" "(2, True, 2)"
+espera "lista paginada (limite=1 → siguiente)" "$(curl -s "$A/lotes?limite=1" | campo "(len(d['lotes']), d['siguiente'], d['lotes'][0]['id'])")" "(1, $L2, $L2)"
+espera "segunda página" "$(curl -s "$A/lotes?limite=1&antes=$L2" | campo "([l['id'] for l in d['lotes']], d['siguiente'])")" "([$L], None)"
+espera "filtro simular=false" "$(curl -s "$A/lotes?simular=false" | campo "[l['id'] for l in d['lotes']]")" "[$L2]"
+espera "filtro q=#id" "$(curl -s "$A/lotes?q=%23$L" | campo "[l['id'] for l in d['lotes']]")" "[$L]"
+espera "estado inválido → 400" "$(codigo "$(curl -s -w '\n%{http_code}' "$A/lotes?estado=raro")")" 400
+espera "lote sin filas (?filas=false)" "$(curl -s "$A/lotes/$L2?filas=false" | campo "('filas' in d, d['progreso']['ok'])")" "(False, 3)"
+espera "filas por páginas" "$(curl -s "$A/lotes/$L/filas?limite=2" | campo "([f['fila'] for f in d['filas']], d['siguiente'], d['total'])")" "([2, 3], 3, 5)"
+espera "filas filtradas por estado" "$(curl -s "$A/lotes/$L/filas?estado=omitida" | campo "d['total']")" 3
+espera "real repetido → 409 duplicado" "$(cuerpo "$(post lotes "{\"csv\":$REAL}")" | campo "(d['error']['codigo'], d['error']['detalle'].startswith('Igual al lote #$L2'))")" "('duplicado', True)"
+LS=$(cuerpo "$(post lotes "{\"csv\":$REAL,\"simular\":true}")" | campo "d['id']")
+espera "simulación repetida → se crea (listo)" "$(curl -s "$A/lotes/$LS?filas=false" | campo "d['estado']")" listo
+espera "archivar un lote listo → 409 no_aplica" "$(cuerpo "$(post lotes/$LS/archivar '{"archivado":true}')" | campo "d['error']['codigo']")" no_aplica
+L3=$(cuerpo "$(post lotes "{\"csv\":$REAL,\"forzar\":true}")" | campo "d['id']")
 espera "cancelar un lote listo" "$(cuerpo "$(post lotes/$L3/cancelar '{}')" | campo "d['estado']")" cancelado
+espera "archivar el cancelado" "$(cuerpo "$(post lotes/$L3/archivar '{"archivado":true}')" | campo "d['archivado']")" True
+espera "archivado oculto por defecto" "$(curl -s "$A/lotes" | campo "($L3 in [l['id'] for l in d['lotes']], d['conteos']['archivados'])")" "(False, 1)"
+espera "archivados=true" "$(curl -s "$A/lotes?archivados=true" | campo "[l['id'] for l in d['lotes']]")" "[$L3]"
 espera "lote inexistente → 404" "$(codigo "$(curl -s -w '\n%{http_code}' $A/lotes/99999)")" 404
 espera "eventos 'lote' en el historial" "$(curl -s "$A/historial?tipo=lote&limite=300" | campo "sorted(set(e['fase'] for e in d))")" "['creado', 'envio', 'fila', 'fin', 'inicio']"
 espera "nada quedó ocupado" "$(curl -s $A/dispositivos | campo "any(x['ocupado'] for x in d)")" False

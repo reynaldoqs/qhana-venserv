@@ -64,5 +64,6 @@ if ($Url -match '^ws://(127\.0\.0\.1|localhost):(\d+)') {
 
 Write-Host "== lanzando el agente -> $Url"
 A shell input keyevent KEYCODE_WAKEUP | Out-Null
-A shell am start -n "$Pkg/.ui.MainActivity" --es url $Url --es token $Token --es adb_serial $Serial | Out-Null
+# La configuración entra solo por ActividadConfig (protegida con el permiso DUMP: solo `adb shell` la puede abrir).
+A shell am start -n "$Pkg/.ui.ActividadConfig" --es url $Url --es token $Token --es adb_serial $Serial | Out-Null
 Write-Host "Listo: $Serial -> $Url"

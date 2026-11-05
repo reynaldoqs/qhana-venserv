@@ -63,5 +63,6 @@ fi
 
 echo "== lanzando el agente → $URL"
 a shell input keyevent KEYCODE_WAKEUP
-a shell am start -n "$PKG/.ui.MainActivity" --es url "$URL" --es token "$TOKEN" --es adb_serial "$SERIAL" >/dev/null
+# La configuración entra solo por ActividadConfig (protegida con el permiso DUMP: solo `adb shell` la puede abrir).
+a shell am start -n "$PKG/.ui.ActividadConfig" --es url "$URL" --es token "$TOKEN" --es adb_serial "$SERIAL" >/dev/null
 echo "Listo: $SERIAL → $URL"

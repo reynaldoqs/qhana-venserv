@@ -105,6 +105,11 @@ impl ConexionAgente {
         self.pedir(|req| AlAgente::Refrescar { req }, ESPERA_CORTA).await.map(|_| ())
     }
 
+    /// Cierra la conexión (el agente, si sigue vivo, vuelve a conectar solo).
+    pub fn cortar(&self) {
+        self.cerrar.notify_one();
+    }
+
     /// Ida y vuelta medida en ms.
     pub async fn ping(&self) -> Result<u64, ErrorCanal> {
         let t = std::time::Instant::now();
@@ -191,7 +196,7 @@ impl Agentes {
                 return;
             }
         };
-        let rechazo = if !self.token.is_empty() && hola.token != self.token {
+        let rechazo = if !self.token.is_empty() && !protocolo::iguales_tiempo_constante(hola.token.as_bytes(), self.token.as_bytes()) {
             Some("token inválido".to_string())
         } else if hola.protocolo != PROTOCOLO {
             Some(format!("protocolo {} no soportado (el control habla {PROTOCOLO})", hola.protocolo))

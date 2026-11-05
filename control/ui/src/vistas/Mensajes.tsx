@@ -1,13 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, Check, Copy, Key, MessageSquare, RefreshCw } from "../componentes/iconos";
-import { api } from "../api/cliente";
-import { useEvento } from "../api/eventos";
+import { ArrowLeft, Check, Copy, Key, MessageSquare, RefreshCw, Search } from "../componentes/iconos";
+import { api, esCancelado, mensajeError } from "../api/cliente";
+import { useAlReconectar, useEvento } from "../api/eventos";
 import type { Dispositivo, Sms } from "../api/tipos";
-import { Aviso, Boton, Esqueleto, Insignia, Segmentado, Selector, Tarjeta, Titulo, Vacio, cx, useToast } from "../componentes/base";
-import { fechaHora, hace, nombreSim } from "../util/datos";
+import { Aviso, Boton, Campo, Esqueleto, Insignia, Segmentado, Selector, Tarjeta, Titulo, Vacio, cx, useToast } from "../componentes/base";
+import { simsConChip } from "../componentes/dispositivo";
+import { etiquetaOperador, etiquetaTelefono, fechaHora, hace, nombreSim } from "../util/datos";
 import { agrupar, claseDe, codigoDe } from "../util/sms";
 
 type Filtro = "principales" | "codigos" | "promos" | "todos";
+
+/** Cuántos SMS se piden por vez; "Cargar más" agranda el límite (el agente lista del más nuevo al más viejo). */
+const PAGINA = 150;
 
 function BotonCopiar({ codigo }: { codigo: string }) {
   const [hecho, setHecho] = useState(false);
@@ -69,30 +73,49 @@ export function Mensajes({ dispositivos, inicial }: { dispositivos: Dispositivo[
     if (!disp && conectados[0]) setDispId(conectados[0].id);
   }, [disp, conectados]);
 
+  const [slot, setSlot] = useState<number | null>(null);
+  const [limite, setLimite] = useState(PAGINA);
+  const [hayMas, setHayMas] = useState(false);
+  const [buscar, setBuscar] = useState("");
+  const ctl = useRef<AbortController | null>(null);
+
   const cargar = useCallback(async () => {
     if (!dispId) return;
+    ctl.current?.abort();
+    const c = new AbortController();
+    ctl.current = c;
     setCargando(true);
     try {
-      setSms(await api.sms(dispId, 150));
+      const l = await api.sms(dispId, { limite, slot }, c.signal);
+      if (c.signal.aborted) return;
+      setSms(l);
+      setHayMas(l.length >= limite);
       setError(null);
     } catch (e) {
-      setError((e as Error).message);
+      if (c.signal.aborted || esCancelado(e)) return;
+      setError(mensajeError(e));
     } finally {
-      setCargando(false);
+      if (!c.signal.aborted) setCargando(false);
     }
-  }, [dispId]);
+  }, [dispId, slot, limite]);
 
+  // Otro teléfono o SIM: se empieza de cero.
   useEffect(() => {
     setSms([]);
     setSel(null);
+    setLimite(PAGINA);
+  }, [dispId, slot]);
+  useEffect(() => {
     cargar();
+    return () => ctl.current?.abort();
   }, [cargar]);
+  useAlReconectar(cargar);
 
-  // Un SMS nuevo de este teléfono aparece sin recargar.
+  // Un SMS nuevo de este teléfono (y de la SIM elegida) aparece sin recargar.
   useEvento((e) => {
     if (e.tipo !== "sms" || e.dispositivo_id !== dispId) return;
     const nuevo = e.sms as Sms | undefined;
-    if (nuevo) setSms((l) => [nuevo, ...l.filter((x) => x.id !== nuevo.id)]);
+    if (nuevo && (slot == null || nuevo.slot === slot)) setSms((l) => [nuevo, ...l.filter((x) => x.id !== nuevo.id)]);
   });
 
   const cuentas = useMemo(
@@ -104,12 +127,15 @@ export function Mensajes({ dispositivos, inicial }: { dispositivos: Dispositivo[
     }),
     [sms],
   );
+  const t = buscar.trim().toLowerCase();
   const visibles = useMemo(
     () =>
-      sms.filter((m) =>
-        filtro === "todos" ? true : filtro === "principales" ? claseDe(m) !== "promo" : filtro === "codigos" ? claseDe(m) === "codigo" : claseDe(m) === "promo",
+      sms.filter(
+        (m) =>
+          (filtro === "todos" ? true : filtro === "principales" ? claseDe(m) !== "promo" : filtro === "codigos" ? claseDe(m) === "codigo" : claseDe(m) === "promo") &&
+          (!t || m.de.toLowerCase().includes(t) || m.texto.toLowerCase().includes(t)),
       ),
-    [sms, filtro],
+    [sms, filtro, t],
   );
   const conversaciones = useMemo(() => agrupar(visibles), [visibles]);
   const actual = conversaciones.find((c) => c.de === sel) ?? conversaciones[0];
@@ -140,7 +166,7 @@ export function Mensajes({ dispositivos, inicial }: { dispositivos: Dispositivo[
               {conectados.length === 0 && <option value="">Sin teléfonos en línea</option>}
               {conectados.map((d) => (
                 <option key={d.id} value={d.id}>
-                  {d.modelo} · {d.adb_serial?.slice(-6) ?? d.id.slice(0, 6)}
+                  {etiquetaTelefono(d)}
                 </option>
               ))}
             </Selector>
@@ -156,7 +182,7 @@ export function Mensajes({ dispositivos, inicial }: { dispositivos: Dispositivo[
         </div>
       )}
 
-      <div className="mb-5">
+      <div className="mb-5 flex flex-wrap items-center gap-3">
         <Segmentado
           etiqueta="Filtrar mensajes"
           valor={filtro}
@@ -171,6 +197,32 @@ export function Mensajes({ dispositivos, inicial }: { dispositivos: Dispositivo[
             { id: "todos", texto: "Todos", n: cuentas.todos },
           ]}
         />
+        {disp && simsConChip(disp).length > 1 && (
+          <Selector
+            aria-label="SIM"
+            className="w-48"
+            value={slot ?? ""}
+            onChange={(e) => setSlot(e.target.value === "" ? null : Number(e.target.value))}
+          >
+            <option value="">Todas las SIM</option>
+            {simsConChip(disp).map((s) => (
+              <option key={s.slot} value={s.slot}>
+                {nombreSim(s.slot)} · {etiquetaOperador(s)}
+              </option>
+            ))}
+          </Selector>
+        )}
+        <div className="relative w-full sm:w-64 sm:ml-auto">
+          <Search className="size-4 absolute left-3 top-1/2 -translate-y-1/2 text-tenue pointer-events-none" />
+          <Campo
+            type="search"
+            aria-label="Buscar por remitente o texto"
+            placeholder="Remitente o texto"
+            value={buscar}
+            onChange={(e) => setBuscar(e.target.value)}
+            className="pl-9"
+          />
+        </div>
       </div>
 
       {cargando && sms.length === 0 ? (
@@ -186,8 +238,8 @@ export function Mensajes({ dispositivos, inicial }: { dispositivos: Dispositivo[
         <Tarjeta>
           <Vacio
             icono={<MessageSquare className="size-5" />}
-            titulo={sms.length === 0 ? "Sin mensajes" : "Nada en este filtro"}
-            texto={sms.length === 0 ? undefined : "Prueba con “Todos” para ver también la publicidad y los códigos."}
+            titulo={sms.length === 0 ? "Sin mensajes" : t ? `Nada coincide con «${buscar.trim()}»` : "Nada en este filtro"}
+            texto={sms.length === 0 || t ? undefined : "Prueba con “Todos” para ver también la publicidad y los códigos."}
           />
         </Tarjeta>
       ) : (
@@ -231,6 +283,13 @@ export function Mensajes({ dispositivos, inicial }: { dispositivos: Dispositivo[
                 );
               })}
             </ul>
+            {hayMas && (
+              <div className="p-2">
+                <Boton variante="secundario" className="w-full h-9" cargando={cargando} onClick={() => setLimite((l) => l + PAGINA)}>
+                  Cargar mensajes más viejos
+                </Boton>
+              </div>
+            )}
           </Tarjeta>
 
           {actual && (

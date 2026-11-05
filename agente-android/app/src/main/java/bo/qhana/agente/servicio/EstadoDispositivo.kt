@@ -38,11 +38,12 @@ class EstadoDispositivo(context: Context, private val telefonia: Telefonia, priv
 
     fun estado(): Estado {
         val bat = ctx.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
-        val nivel = bat?.let {
+        // null si Android no informa el nivel (protocolo: `bateria` 0–100 o null), nunca un -1 que parezca un dato.
+        val nivel: Int? = bat?.let {
             val l = it.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
             val s = it.getIntExtra(BatteryManager.EXTRA_SCALE, 100)
-            if (l >= 0 && s > 0) l * 100 / s else -1
-        } ?: -1
+            if (l >= 0 && s > 0) (l * 100 / s).coerceIn(0, 100) else null
+        }
         val cargando = (bat?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0) != 0
         val pm = ctx.getSystemService(PowerManager::class.java)
         return Estado(

@@ -20,11 +20,15 @@ class UssdApi(private val telefonia: Telefonia) : MotorUssd {
     override val nombre = "api"
     private val handler = Handler(Looper.getMainLooper())
 
-    override suspend fun iniciar(sesion: String, slot: Int, subId: Int, codigo: String, timeoutMs: Long): RespuestaUssd {
+    override suspend fun iniciar(sesion: String, slot: Int, subId: Int, codigo: String, plazo: Plazo): RespuestaUssd {
+        val espera = plazo.restante()
+        if (espera < MotorUssd.MINIMO_PARA_ENVIAR_MS) {
+            throw FalloUssd(CodigoError.TIMEOUT, "No quedó tiempo para marcar (plazo de ${plazo.totalMs} ms); no se marcó")
+        }
         val t0 = SystemClock.elapsedRealtime()
         val tm = telefonia.telephonyDe(subId)
         val texto = try {
-            withTimeout(timeoutMs) {
+            withTimeout(espera) {
                 suspendCancellableCoroutine<String> { cont ->
                     val cb = object : TelephonyManager.UssdResponseCallback() {
                         override fun onReceiveUssdResponse(t: TelephonyManager, req: String, resp: CharSequence) {
@@ -45,12 +49,12 @@ class UssdApi(private val telefonia: Telefonia) : MotorUssd {
                 }
             }
         } catch (e: TimeoutCancellationException) {
-            throw FalloUssd(CodigoError.TIMEOUT, "Sin respuesta en ${timeoutMs} ms")
+            throw FalloUssd(CodigoError.TIMEOUT, "Sin respuesta en ${espera} ms")
         }
         return RespuestaUssd(sesion, texto.trim(), abierta = false, ms = SystemClock.elapsedRealtime() - t0)
     }
 
-    override suspend fun responder(sesion: String, texto: String, timeoutMs: Long): RespuestaUssd =
+    override suspend fun responder(sesion: String, texto: String, plazo: Plazo): RespuestaUssd =
         throw FalloUssd(CodigoError.SESION_INEXISTENTE, "El modo api no mantiene sesiones; usa modo pantalla")
 
     override suspend fun cancelar(sesion: String) = Unit

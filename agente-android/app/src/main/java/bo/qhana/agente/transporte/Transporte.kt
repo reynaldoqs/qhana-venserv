@@ -14,8 +14,11 @@ data class InfoConexion(val estado: EstadoConexion, val detalle: String = "")
 interface Transporte {
     val estado: StateFlow<InfoConexion>
 
-    /** Conecta y reconecta solo. [saludo] se llama en cada conexión para armar el `hola`. */
-    fun iniciar(saludo: () -> Mensaje, alRecibir: (Mensaje) -> Unit, alConectar: () -> Unit, alPerder: () -> Unit)
+    /**
+     * Conecta y reconecta solo. [saludo] se llama en cada conexión para armar el `hola`. [alPerder] corre antes de
+     * volver a conectar (protocolo: al reconectar se cierra antes cualquier sesión USSD abierta).
+     */
+    fun iniciar(saludo: () -> Mensaje, alRecibir: (Mensaje) -> Unit, alConectar: () -> Unit, alPerder: suspend () -> Unit)
 
     fun detener()
 

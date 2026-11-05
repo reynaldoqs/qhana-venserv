@@ -4,11 +4,13 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.provider.Telephony
+import android.util.Log
+import bo.qhana.agente.AgenteApp
 import bo.qhana.agente.protocolo.Sms
 import bo.qhana.agente.servicio.AgenteService
 import bo.qhana.agente.telefonia.Telefonia
 
-/** SMS entrante → cola de [BusSms]; el servicio lo envía al control como `sms_recibido`. */
+/** SMS entrante → cola de [BusSms] (guardada en disco); el servicio lo envía al control como `sms_recibido`. */
 class ReceptorSms : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Telephony.Sms.Intents.SMS_RECEIVED_ACTION) return
@@ -23,7 +25,10 @@ class ReceptorSms : BroadcastReceiver() {
             fechaMs = partes[0].timestampMillis,
             leido = false,
         )
-        BusSms.publicar(sms)
-        AgenteService.arrancar(context)
+        BusSms.publicar(context, sms)
+        // Puede fallar (ForegroundServiceStartNotAllowedException en Android 12+ desde segundo plano): el SMS ya quedó
+        // guardado y sale cuando el agente vuelva a conectar.
+        runCatching { AgenteService.arrancar(context) }
+            .onFailure { Log.w(AgenteApp.TAG, "no pude arrancar el agente desde el SMS", it) }
     }
 }

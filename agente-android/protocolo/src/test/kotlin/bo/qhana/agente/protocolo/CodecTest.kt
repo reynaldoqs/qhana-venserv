@@ -36,11 +36,38 @@ class CodecTest {
     }
 
     @Test
+    fun bateriaDesconocidaVaComoNull() {
+        val s = Codec.codificar(Estado(null, false, true, true, emptyList()))
+        assertTrue(s, s.contains("\"bateria\":null"))
+        assertEquals(Estado(null, false, true, true, emptyList()), Codec.decodificar(s))
+        val conNivel = Codec.decodificar(
+            """{"tipo":"estado","bateria":67,"cargando":true,"pantalla_encendida":true,"accesibilidad_activa":true,"permisos_faltantes":[]}"""
+        ) as Estado
+        assertEquals(67, conNivel.bateria)
+    }
+
+    @Test
+    fun noEntendidoConReqDaErrorParametro() {
+        val f = Codec.falloNoEntendido("""{"tipo":"algo_futuro","req":"r9"}""")
+        assertEquals("r9", f?.req)
+        assertEquals(CodigoError.PARAMETRO, f?.codigo)
+        // Tipo conocido al que le faltan campos: tampoco se deja esperando a quien preguntó.
+        val incompleto = """{"tipo":"ussd_iniciar","req":"r10","slot":0}"""
+        assertNull(Codec.decodificar(incompleto))
+        assertEquals("r10", Codec.falloNoEntendido(incompleto)?.req)
+        // Sin req (un evento), req que no es texto o JSON roto: no se contesta nada.
+        assertNull(Codec.falloNoEntendido("""{"tipo":"algo_futuro"}"""))
+        assertNull(Codec.falloNoEntendido("""{"tipo":"algo_futuro","req":5}"""))
+        assertNull(Codec.falloNoEntendido("no es json"))
+        assertNull(Codec.falloNoEntendido("[1,2]"))
+    }
+
+    @Test
     fun idaYVuelta() {
         val todos: List<Mensaje> = listOf(
             Hola(token = "t", dispositivoId = "d", fabricante = "F", modelo = "M", android = "14", sdk = 34,
                 appVersion = "0.1.0", sims = emptyList(), capacidades = listOf("ussd_api")),
-            Estado(50, true, true, false, listOf("CALL_PHONE")),
+            Estado(50, true, true, false, listOf("CALL_PHONE")), Estado(null, false, true, false, emptyList()),
             Fallo("r", CodigoError.OCUPADO, "x"), Ok("r"), Pong("r"),
             SmsRecibido(Sms("1", 0, "300", "hola", 1L)), SmsLista("r", emptyList()),
             Bienvenido("s", 1L), Rechazado("m"), UssdResponder("r", "s", "2"), UssdCancelar("r", "s"),

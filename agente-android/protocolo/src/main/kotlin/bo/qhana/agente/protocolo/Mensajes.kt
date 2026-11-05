@@ -105,7 +105,8 @@ data class Sims(val sims: List<Sim>) : Mensaje
 @Serializable
 @SerialName("estado")
 data class Estado(
-    val bateria: Int,
+    /** 0–100, o null si Android no informa el nivel. */
+    val bateria: Int?,
     val cargando: Boolean,
     @SerialName("pantalla_encendida") val pantallaEncendida: Boolean,
     @SerialName("accesibilidad_activa") val accesibilidadActiva: Boolean,

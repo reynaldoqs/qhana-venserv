@@ -25,13 +25,56 @@ pub struct ChipInfo {
     /// Entró un chip distinto a esta ranura y todavía no se consultó su saldo: no entra al reparto.
     #[serde(default)]
     pub sin_verificar: bool,
-    /// `normal` o `pda`. Decide qué receta usa el chip (ver "Chips PDA" en el protocolo).
-    #[serde(default = "tipo_normal")]
+    /// `normal` o `dealer`. Decide qué receta usa el chip (ver "Chips dealer" en el protocolo).
+    #[serde(default = "tipo_normal", deserialize_with = "tipo_actual")]
     pub tipo: String,
+    /// El chip tiene un PIN guardado (para recetas con un parámetro `pin` secreto). El PIN nunca sale por la API.
+    #[serde(default)]
+    pub tiene_pin: bool,
+    /// Saldo dealer conocido: el que gastan las recargas de un chip dealer. No es el principal.
+    #[serde(default, alias = "saldo_pda")]
+    pub saldo_dealer: Option<f64>,
+    #[serde(default, alias = "saldo_pda_ms")]
+    pub saldo_dealer_ms: Option<i64>,
+    /// Sin límite diario para la acción de estos números (la receta no tiene `por_dia`): `cupo_hoy` no cuenta.
+    #[serde(default)]
+    pub sin_limite: bool,
+    /// En `Validacion.chips`: la acción del lote a la que se refieren `enviados_hoy`, `cupo_hoy` y `sin_limite`.
+    /// `None` = los de transferir (fuera de una validación, o un chip que no hace nada en el lote).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accion: Option<String>,
 }
 
+impl ChipInfo {
+    /// Para la API: un chip sin límite muestra `cupo_hoy: 0` (internamente lleva un cupo enorme para repartir).
+    pub fn para_api(mut self) -> Self {
+        if self.sin_limite {
+            self.cupo_hoy = 0;
+        }
+        self
+    }
+}
+
+/// Acción de las recetas que leen el saldo dealer. Su `salida` debe traer `saldo_dealer`.
+pub const ACCION_SALDO_DEALER: &str = nucleo::receta::ACCION_SALDO_DEALER;
+
 pub const TIPO_NORMAL: &str = "normal";
-pub const TIPO_PDA: &str = "pda";
+pub const TIPO_DEALER: &str = nucleo::receta::CHIP_DEALER;
+
+/// Lee un tipo de chip o de saldo traduciendo el nombre viejo `pda` → `dealer` (lotes guardados antes del cambio
+/// y pedidos de una interfaz vieja). Ver "Compatibilidad" en el protocolo.
+fn tipo_actual<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    Ok(nucleo::receta::tipo_chip_actual(&String::deserialize(d)?))
+}
+
+/// Como [`tipo_actual`], para un campo opcional.
+fn tipo_actual_opcional<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(Option::<String>::deserialize(d)?.map(|t| nucleo::receta::tipo_chip_actual(&t)))
+}
+
+fn saldo_principal() -> String {
+    "principal".to_string()
+}
 
 fn tipo_normal() -> String {
     TIPO_NORMAL.to_string()
@@ -49,7 +92,7 @@ pub enum EstadoValidacion {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EnvioPlan {
-    pub monto: u64,
+    pub monto: f64,
     pub dispositivo: String,
     pub slot: u32,
 }
@@ -58,7 +101,7 @@ pub struct EnvioPlan {
 pub struct FilaValidada {
     pub fila: u32,
     pub numero: Option<String>,
-    pub monto: Option<u64>,
+    pub monto: Option<f64>,
     pub operador: Option<String>,
     pub accion: String,
     pub referencia: Option<String>,
@@ -67,7 +110,7 @@ pub struct FilaValidada {
     pub errores: Vec<String>,
     pub avisos: Vec<String>,
     /// Montos de cada envío (12 → [10, 2]).
-    pub envios: Vec<u64>,
+    pub envios: Vec<f64>,
     pub plan: Vec<EnvioPlan>,
     /// Envíos de esta fila que hoy no entran en ningún chip.
     pub sin_capacidad: u32,
@@ -81,8 +124,16 @@ pub struct FilaValidada {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ResumenOperador {
     pub operador: String,
+    /// Una entrada por (operador, acción): la acción de esas filas.
+    #[serde(default)]
+    pub accion: String,
     pub chips: u32,
+    /// Suma del cupo de los chips con límite diario para esa acción.
     pub cupo_hoy: u32,
+    /// Algún chip no tiene límite diario para esa acción (el cupo no limita el plan).
+    #[serde(default)]
+    pub cupo_sin_limite: bool,
+    /// Saldo principal: solo cuenta con `transferir` (con otra acción, 0).
     pub saldo_conocido: f64,
     pub saldo_desconocido_chips: u32,
     pub necesario_bs: f64,
@@ -96,12 +147,15 @@ pub struct ResumenValidacion {
     pub validas: u32,
     pub con_avisos: u32,
     pub invalidas: u32,
-    pub total_bs: u64,
+    pub total_bs: f64,
     pub envios: u32,
     pub comision_total: f64,
     pub planificados: u32,
     pub sin_capacidad: u32,
     pub operadores: Vec<ResumenOperador>,
+    /// Avisos del lote entero (no de una fila), p. ej. "la receta X cambió y no se ha probado".
+    #[serde(default)]
+    pub avisos: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -109,6 +163,12 @@ pub struct Validacion {
     pub filas: Vec<FilaValidada>,
     pub resumen: ResumenValidacion,
     pub chips: Vec<ChipInfo>,
+    /// Los chips elegidos (con operador, número, tipo y la receta que correrá cada uno), si se pidió `origen`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origen: Option<OrigenLote>,
+    /// Chips elegidos que no sirven y se excluyeron (con el motivo). Vacío si no hay.
+    #[serde(default)]
+    pub avisos_origen: Vec<String>,
 }
 
 // ───────────────────────────── lotes ─────────────────────────────
@@ -230,7 +290,7 @@ pub struct EnvioLote {
     /// Id interno del envío.
     pub id: i64,
     pub n: u32,
-    pub monto: u64,
+    pub monto: f64,
     pub dispositivo: Option<String>,
     pub slot: Option<u32>,
     /// Número de la línea de origen, si se conoce.
@@ -248,13 +308,13 @@ pub struct FilaLote {
     pub id: i64,
     pub fila: u32,
     pub numero: Option<String>,
-    pub monto: Option<u64>,
+    pub monto: Option<f64>,
     pub operador: Option<String>,
     pub accion: String,
     pub referencia: Option<String>,
     pub receta: Option<String>,
     pub estado: EstadoFila,
-    pub enviado_bs: u64,
+    pub enviado_bs: f64,
     pub detalle: Option<String>,
     pub envios: Vec<EnvioLote>,
 }
@@ -272,9 +332,155 @@ pub struct Progreso {
     pub pendientes: u32,
     pub sin_capacidad: u32,
     pub omitidas: u32,
-    pub enviado_bs: u64,
+    pub enviado_bs: f64,
     pub comision_bs: f64,
-    pub total_bs: u64,
+    pub total_bs: f64,
+}
+
+/// Un chip elegido como origen de un lote. `operador`, `numero`, `tipo` y `receta` los completa el control.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct ChipOrigen {
+    pub dispositivo: String,
+    #[serde(default)]
+    pub slot: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operador: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub numero: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "tipo_actual_opcional")]
+    pub tipo: Option<String>,
+    /// La receta que correrá este chip.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receta: Option<String>,
+}
+
+/// De dónde salen los envíos de un lote. Dos formas (ver "Lote de un chip" y "Lote desde chips elegidos"):
+/// - `{ chips: [{dispositivo, slot}], accion }`: el lote se reparte solo entre esos chips;
+/// - la vieja `{ dispositivo, slot, receta }`: un solo chip con esa receta (equivale a `chips` con uno).
+///
+/// El control la devuelve completa: `chips` con operador, número, tipo y receta, y `accion`; para la forma vieja,
+/// además `dispositivo`, `slot`, `receta`, `operador` y `numero` como antes.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct OrigenLote {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chips: Vec<ChipOrigen>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accion: Option<String>,
+    // ── forma vieja (un chip y una receta) ──
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispositivo: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot: Option<u32>,
+    /// Nombre de la receta que corre cada envío (p. ej. `tigo-dealer-recargar`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receta: Option<String>,
+    /// Operador del chip (lo completa el control).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operador: Option<String>,
+    /// Número del chip, si se conoce (lo completa el control).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub numero: Option<String>,
+}
+
+impl OrigenLote {
+    /// Origen viejo: un chip con una receta.
+    pub fn un_chip(dispositivo: &str, slot: u32, receta: &str) -> Self {
+        Self { dispositivo: Some(dispositivo.into()), slot: Some(slot), receta: Some(receta.into()), ..Default::default() }
+    }
+
+    /// Chips elegidos con una acción.
+    pub fn de_chips(chips: &[(&str, u32)], accion: &str) -> Self {
+        Self {
+            chips: chips.iter().map(|(d, s)| ChipOrigen { dispositivo: d.to_string(), slot: *s, ..Default::default() }).collect(),
+            accion: Some(accion.into()),
+            ..Default::default()
+        }
+    }
+
+    /// ¿Es la forma vieja (un chip con su receta)?
+    pub fn es_un_chip(&self) -> bool {
+        self.chips.is_empty() && self.dispositivo.is_some()
+    }
+
+    /// Un origen guardado con la forma vieja (lotes de antes) también trae `chips`.
+    pub fn normalizado(mut self) -> Self {
+        if self.chips.is_empty() {
+            if let Some(d) = &self.dispositivo {
+                self.chips = vec![ChipOrigen {
+                    dispositivo: d.clone(),
+                    slot: self.slot.unwrap_or(0),
+                    operador: self.operador.clone(),
+                    numero: self.numero.clone(),
+                    tipo: None,
+                    receta: self.receta.clone(),
+                }];
+            }
+        }
+        self
+    }
+
+    /// ¿Ese chip es uno de los elegidos?
+    pub fn tiene(&self, dispositivo: &str, slot: u32) -> bool {
+        self.chips.iter().any(|c| c.dispositivo == dispositivo && c.slot == slot)
+            || (self.chips.is_empty() && self.dispositivo.as_deref() == Some(dispositivo) && self.slot.unwrap_or(0) == slot)
+    }
+}
+
+// ───────────────────────────── carriles ─────────────────────────────
+
+/// El envío que un chip está haciendo ahora.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ActualCarril {
+    pub fila: u32,
+    pub numero: Option<String>,
+    pub monto: f64,
+    pub desde_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SaldoCarril {
+    /// `principal` o `dealer`.
+    #[serde(deserialize_with = "tipo_actual")]
+    pub tipo: String,
+    pub bs: f64,
+    pub ms: Option<i64>,
+}
+
+/// Un chip que participa (o puede participar) en un lote: `GET /api/lotes/{id}/carriles`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Carril {
+    pub dispositivo: String,
+    pub slot: u32,
+    pub telefono: Option<String>,
+    pub operador: Option<String>,
+    pub numero: Option<String>,
+    #[serde(default, deserialize_with = "tipo_actual_opcional")]
+    pub tipo: Option<String>,
+    pub receta: Option<String>,
+    /// `enviando` · `esperando` · `libre` · `sin_capacidad` · `desconectado` · `excluido`.
+    pub estado: String,
+    pub actual: Option<ActualCarril>,
+    pub ok: u32,
+    pub fallidos: u32,
+    pub inciertos: u32,
+    pub enviado_bs: f64,
+    /// `null` = sin límite.
+    pub cupo_restante: Option<u32>,
+    /// La receta del chip no tiene límite diario (distingue `cupo_restante: null` de "sin dato").
+    #[serde(default)]
+    pub cupo_sin_limite: bool,
+    pub saldo: Option<SaldoCarril>,
+    pub ms_promedio: Option<u64>,
+    pub motivo: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Carriles {
+    pub carriles: Vec<Carril>,
+    /// Envíos pendientes o en curso.
+    pub pendientes: u32,
+    /// Estimación de lo que falta con el ritmo actual; `null` si el lote no está en curso o aún no hay ritmo.
+    pub eta_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -290,8 +496,48 @@ pub struct Lote {
     #[serde(default)]
     pub verificacion: Option<Verificacion>,
     pub progreso: Progreso,
+    /// Chip y receta elegidos (modo "un chip"); `None` = reparto por operador entre todos los chips.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origen: Option<OrigenLote>,
+    /// Archivado: no aparece en la lista por defecto. Nada más cambia.
+    #[serde(default)]
+    pub archivado: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filas: Option<Vec<FilaLote>>,
+}
+
+/// Números de las pestañas de `GET /api/lotes` (no dependen del filtro).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct ConteosLotes {
+    /// `listo` + `en_curso` + `pausado`, sin archivados.
+    pub activos: u64,
+    /// Con filas fallidas, inciertas o parciales, sin archivados.
+    pub problemas: u64,
+    /// `terminado` + `cancelado`, sin archivados.
+    pub terminados: u64,
+    /// Simulaciones, sin archivadas.
+    pub simulaciones: u64,
+    pub archivados: u64,
+}
+
+/// Respuesta de `GET /api/lotes`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ListaLotes {
+    pub lotes: Vec<Lote>,
+    /// Valor de `antes` para la página siguiente (`null` si no hay más).
+    pub siguiente: Option<i64>,
+    /// Lotes que cumplen el filtro (todas las páginas).
+    pub total: u64,
+    pub conteos: ConteosLotes,
+}
+
+/// Respuesta de `GET /api/lotes/{id}/filas`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PaginaFilas {
+    pub filas: Vec<FilaLote>,
+    /// Valor de `despues` para la página siguiente (`null` si no hay más).
+    pub siguiente: Option<u32>,
+    pub total: u64,
 }
 
 /// ¿Terminó todo bien? `terminado` solo dice que el ejecutor ya no tiene nada más que intentar.
@@ -343,6 +589,9 @@ pub struct CuadreChip {
     pub dispositivo: String,
     pub slot: u32,
     pub numero: Option<String>,
+    /// Qué saldo se comparó en este chip: `principal` (lo transferido) o `dealer` (lo recargado desde un chip dealer).
+    #[serde(default = "saldo_principal", deserialize_with = "tipo_actual")]
+    pub saldo: String,
     pub estado: EstadoCuadre,
     pub saldo_inicial: Option<f64>,
     pub saldo_actual: Option<f64>,
@@ -358,6 +607,9 @@ pub struct CuadreChip {
 pub struct Verificacion {
     pub lote_id: i64,
     pub verificado_ms: i64,
+    /// Qué saldo se comparó: `principal` (transferencias), `dealer` (recargas desde chips dealer) o `mixto` (los dos).
+    #[serde(default = "saldo_principal", deserialize_with = "tipo_actual")]
+    pub saldo: String,
     pub completo: bool,
     pub motivos: Vec<String>,
     /// Todos los chips cuadran.

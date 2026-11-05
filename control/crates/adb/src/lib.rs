@@ -22,6 +22,8 @@ const INTERVALO: Duration = Duration::from_secs(3);
 const VUELTAS_REVISION: u32 = 10;
 const ESPERA_COMANDO: Duration = Duration::from_secs(20);
 const ESPERA_INSTALAR: Duration = Duration::from_secs(180);
+/// Si entre dos vueltas el reloj avanzó esto de más, el PC estuvo dormido.
+const SALTO_SUENO: Duration = Duration::from_secs(15);
 
 /// Ejecutable de ADB.
 #[derive(Debug, Clone)]
@@ -212,6 +214,16 @@ impl Provision {
     }
 }
 
+/// Resultado de "Reconectar" para un teléfono de ADB.
+#[derive(Debug, Clone, Serialize)]
+pub struct ReconexionAdb {
+    pub serial: String,
+    pub reverse_ok: bool,
+    /// Se abrió la app con `reconectar` (su agente no estaba conectado).
+    pub app_abierta: bool,
+    pub detalle: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct PasoProvision {
     pub paso: String,
@@ -278,6 +290,7 @@ impl GestorAdb {
 
     async fn bucle(self: Arc<Self>) {
         let mut avisado = false;
+        let mut forzar = false;
         loop {
             match self.adb.dispositivos().await {
                 Ok(lista) => {
@@ -286,8 +299,16 @@ impl GestorAdb {
                     }
                     self.disponible.store(true, std::sync::atomic::Ordering::Relaxed);
                     avisado = false;
-                    self.vuelta(lista).await;
+                    self.vuelta(lista, std::mem::take(&mut forzar)).await;
+                    // Si el reloj de pared avanzó mucho más que la pausa, el PC durmió: al despertar el túnel
+                    // `adb reverse` puede haberse perdido, así que la próxima vuelta lo revisa en todos.
+                    let antes = std::time::SystemTime::now();
                     tokio::time::sleep(INTERVALO).await;
+                    let paso = std::time::SystemTime::now().duration_since(antes).unwrap_or_default();
+                    if paso > INTERVALO + SALTO_SUENO {
+                        tracing::info!(segundos = paso.as_secs(), "pausa larga (¿el PC durmió?): reviso el túnel de todos");
+                        forzar = true;
+                    }
                 }
                 Err(e) => {
                     self.disponible.store(false, std::sync::atomic::Ordering::Relaxed);
@@ -301,7 +322,52 @@ impl GestorAdb {
         }
     }
 
-    async fn vuelta(&self, lista: Vec<(String, String, Option<String>)>) {
+    /// Botón "Reconectar": vuelve a aplicar `adb reverse` en cada teléfono listo y, si su agente no está
+    /// conectado, abre la app con `reconectar` para que conecte ya (sin esperar su pausa de hasta 30 s).
+    pub async fn reconectar(&self, p: &Provision) -> Vec<ReconexionAdb> {
+        let listos: Vec<String> = self
+            .estado
+            .read()
+            .unwrap()
+            .iter()
+            .filter(|(_, s)| s.info.estado == "device")
+            .map(|(serial, _)| serial.clone())
+            .collect();
+        let mut out = vec![];
+        for serial in listos {
+            let r = self.adb.reverse(&serial, self.puerto).await;
+            let reverse_ok = r.is_ok();
+            let mut detalle = r.err();
+            let cambio = {
+                let mut estado = self.estado.write().unwrap();
+                match estado.get_mut(&serial) {
+                    Some(s) if s.info.reverse_ok != reverse_ok => {
+                        s.info.reverse_ok = reverse_ok;
+                        true
+                    }
+                    _ => false,
+                }
+            };
+            if cambio {
+                self.bus.emitir(ev::ADB, json!({ "accion": "reverse", "serial": serial, "ok": reverse_ok }));
+            }
+            let mut app_abierta = false;
+            if reverse_ok && !self.registro.conectado_por_serial(&serial) {
+                let cmd = format!("am start -n {} --es adb_serial {serial} --ez reconectar true", p.actividad);
+                match self.adb.shell(&serial, &cmd).await {
+                    // `am start` puede salir con 0 y aun así fallar ("Error: Activity class … does not exist").
+                    Ok(salida) if salida.contains("Error") => detalle = Some(salida.trim().chars().take(200).collect()),
+                    Ok(_) => app_abierta = true,
+                    Err(e) => detalle = Some(e),
+                }
+            }
+            tracing::info!(%serial, reverse_ok, app_abierta, ?detalle, "reconectar");
+            out.push(ReconexionAdb { serial, reverse_ok, app_abierta, detalle });
+        }
+        out
+    }
+
+    async fn vuelta(&self, lista: Vec<(String, String, Option<String>)>, forzar: bool) {
         // Desaparecidos.
         let presentes: Vec<&String> = lista.iter().map(|(s, _, _)| s).collect();
         let idos: Vec<String> = self
@@ -332,7 +398,12 @@ impl GestorAdb {
             seg.info.modelo = modelo.or(seg.info.modelo);
 
             if estado == "device" {
-                let revisar = !seg.info.reverse_ok || seg.vueltas % VUELTAS_REVISION == 0 || cambio_estado;
+                // Un teléfono sin agente conectado se revisa en cada vuelta: puede estar esperando el túnel.
+                let revisar = forzar
+                    || !seg.info.reverse_ok
+                    || seg.vueltas % VUELTAS_REVISION == 0
+                    || cambio_estado
+                    || !self.registro.conectado_por_serial(&serial);
                 if revisar {
                     let ok = if self.adb.reverse_activo(&serial, self.puerto).await {
                         true

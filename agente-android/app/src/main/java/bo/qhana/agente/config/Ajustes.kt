@@ -12,9 +12,12 @@ import android.provider.Settings
 class Ajustes(context: Context) {
     private val prefs = context.applicationContext.getSharedPreferences("ajustes", Context.MODE_PRIVATE)
 
+    /** Solo `ws://…` o `wss://…` (ver [UrlControl]): una URL inválida se ignora y queda la anterior. */
     var url: String
-        get() = prefs.getString(K_URL, URL_POR_DEFECTO) ?: URL_POR_DEFECTO
-        set(v) = prefs.edit().putString(K_URL, v.trim()).apply()
+        get() = prefs.getString(K_URL, null)?.takeIf { UrlControl.valida(it) } ?: URL_POR_DEFECTO
+        set(v) {
+            if (UrlControl.valida(v)) prefs.edit().putString(K_URL, v.trim()).apply()
+        }
 
     var token: String
         get() = prefs.getString(K_TOKEN, TOKEN_POR_DEFECTO) ?: TOKEN_POR_DEFECTO

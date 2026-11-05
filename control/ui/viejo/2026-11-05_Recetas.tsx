@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { BookOpen, CheckCircle2, CircleAlert, CircleDashed, FlaskConical, Play, TriangleAlert } from "../componentes/iconos";
-import { api, FalloApi } from "../api/cliente";
-import type { Dispositivo, EstadoResultado, Receta, Resultado } from "../api/tipos";
-import { Aviso, Boton, Campo, Insignia, Interruptor, Selector, Tarjeta, Titulo, Vacio, cx } from "../componentes/base";
-import { etiquetaOperador, nombreSim, operadorDe, segundos, useRecetas } from "../util/datos";
+import { api, mensajeError } from "../api/cliente";
+import type { ChipInfo, Dispositivo, EstadoResultado, Receta, Resultado } from "../api/tipos";
+import { Aviso, Boton, Campo, Casilla, Dialogo, Insignia, Interruptor, Segmentado, Selector, Tarjeta, Titulo, Vacio, cx } from "../componentes/base";
+import { etiquetaOperador, etiquetaTelefono, nombreSim, operadorDe, segundos, sinPrefijo, useRecetas } from "../util/datos";
 import { simsConChip } from "../componentes/dispositivo";
 
 const estadoUi: Record<EstadoResultado, { tono: "ok" | "aviso" | "error" | "info"; texto: string; icono: typeof CheckCircle2 }> = {
@@ -20,8 +20,13 @@ const deFiltro = (r: Receta, f: Filtro) => f === "Todas" || r.operador.toUpperCa
 
 const colorTono = { ok: "text-ok", aviso: "text-aviso", error: "text-error", info: "text-info" } as const;
 
-function validar(r: Receta, valores: Record<string, string>): string | null {
+/** El parámetro `pin` secreto se completa en el control con el PIN guardado del chip. */
+const usaPinGuardado = (p: { nombre: string; secreto?: boolean }, chip: ChipInfo | null) =>
+  p.secreto && p.nombre === "pin" && !!chip?.tiene_pin;
+
+function validar(r: Receta, valores: Record<string, string>, chip: ChipInfo | null): string | null {
   for (const p of r.parametros) {
+    if (usaPinGuardado(p, chip) && !valores[p.nombre]) continue;
     const v = (valores[p.nombre] ?? "").trim();
     if (!v) return `Falta ${p.nombre}`;
     if (p.opciones?.length && !p.opciones.includes(v)) return `${p.nombre} debe ser uno de: ${p.opciones.join(", ")}`;
@@ -87,10 +92,14 @@ export function Recetas({ dispositivos }: { dispositivos: Dispositivo[] }) {
   const [slot, setSlot] = useState(0);
   const [valores, setValores] = useState<Record<string, string>>({});
   const [simular, setSimular] = useState(true);
-  const [confirmando, setConfirmando] = useState(false);
+  const [confirmando, setConfirmando] = useState(false); // diálogo de ejecución real abierto
+  const [errorChip, setErrorChip] = useState<string | null>(null);
   const [corriendo, setCorriendo] = useState(false);
   const [resultado, setResultado] = useState<Resultado | null>(null);
   const [fallo, setFallo] = useState<string | null>(null);
+  const [chip, setChip] = useState<ChipInfo | null>(null);
+  const [recordarPin, setRecordarPin] = useState(true);
+  const [otroPin, setOtroPin] = useState(false);
 
   const receta = useMemo(() => visibles.find((r) => r.nombre === nombre), [visibles, nombre]);
   const disp = conectados.find((d) => d.id === dispId);
@@ -108,7 +117,6 @@ export function Recetas({ dispositivos }: { dispositivos: Dispositivo[] }) {
     setFallo(null);
     setConfirmando(false);
   }, [nombre]);
-  useEffect(() => setConfirmando(false), [simular, dispId, slot, valores]);
   // Al cambiar de receta o teléfono, elige solo el primer chip del operador de la receta.
   useEffect(() => {
     if (!receta || !disp) return;
@@ -119,14 +127,26 @@ export function Recetas({ dispositivos }: { dispositivos: Dispositivo[] }) {
   // Si el operador del chip no coincide con el de la receta, se avisa (no se bloquea: el nombre de red puede variar).
   const sim = disp?.sims.find((s) => s.slot === slot);
   const operadorDistinto = receta && sim && operadorDe(sim) !== receta.operador.toUpperCase();
-  const invalido = receta ? validar(receta, valores) : "Elige una receta";
+  // El chip elegido (para saber si tiene PIN guardado).
+  useEffect(() => {
+    setChip(null);
+    setOtroPin(false);
+    setErrorChip(null);
+    if (!dispId || !receta?.parametros.some((p) => p.secreto)) return;
+    api.chips().then(
+      (cs) => setChip(cs.find((c) => c.dispositivo === dispId && c.slot === slot) ?? null),
+      (e) => setErrorChip(mensajeError(e)),
+    );
+  }, [dispId, slot, receta?.nombre]); // eslint-disable-line react-hooks/exhaustive-deps
+  const chipPin = otroPin ? null : chip;
+  const invalido = receta ? validar(receta, valores, chipPin) : "Elige una receta";
   // Las recetas de solo consulta se ejecutan directo; simular solo tiene sentido si mueven saldo.
   const mueve = receta?.mueve_dinero ?? true;
   const simulando = mueve && simular;
 
-  async function ejecutar() {
+  async function ejecutar(confirmado = false) {
     if (!receta || !disp || invalido) return;
-    if (mueve && !simular && !confirmando) {
+    if (mueve && !simular && !confirmado) {
       setConfirmando(true);
       return;
     }
@@ -135,10 +155,15 @@ export function Recetas({ dispositivos }: { dispositivos: Dispositivo[] }) {
     setResultado(null);
     setFallo(null);
     try {
+      // Un PIN escrito a mano se guarda en el chip si se pidió, y deja de quedar en pantalla.
+      if (valores.pin && recordarPin && receta.parametros.some((p) => p.secreto && p.nombre === "pin")) {
+        setChip(await api.fijarPinChip(disp.id, slot, valores.pin));
+        setOtroPin(false);
+      }
       setResultado(await api.ejecutarReceta(receta.nombre, disp.id, slot, valores, simulando));
+      setValores(({ pin: _pin, ...resto }) => resto);
     } catch (e) {
-      const f = e as FalloApi;
-      setFallo(`${f.codigo}: ${f.message}`);
+      setFallo(mensajeError(e));
     } finally {
       setCorriendo(false);
     }
@@ -157,25 +182,13 @@ export function Recetas({ dispositivos }: { dispositivos: Dispositivo[] }) {
       ) : (
         <div className="grid gap-4 lg:grid-cols-[360px_1fr]">
           <div className="space-y-3">
-            <div role="tablist" className="grid grid-cols-4 gap-1 rounded-xl border border-borde bg-panel p-1">
-              {FILTROS.map((f) => {
-                const n = lista.filter((r) => deFiltro(r, f)).length;
-                return (
-                  <button
-                    key={f}
-                    role="tab"
-                    aria-selected={filtro === f}
-                    onClick={() => setFiltro(f)}
-                    className={cx(
-                      "rounded-xl px-2 py-1.5 text-sm font-medium transition-colors",
-                      filtro === f ? "bg-panel-2 text-texto" : "text-tenue hover:bg-panel-2",
-                    )}
-                  >
-                    {f} <span className="text-xs tabular-nums opacity-70">{n}</span>
-                  </button>
-                );
-              })}
-            </div>
+            <Segmentado
+              etiqueta="Filtrar recetas por operador"
+              valor={filtro}
+              onCambio={setFiltro}
+              className="w-full"
+              opciones={FILTROS.map((f) => ({ id: f, texto: f, n: lista.filter((r) => deFiltro(r, f)).length }))}
+            />
 
             <Tarjeta className="p-1.5">
               {visibles.length === 0 && (
@@ -208,7 +221,7 @@ export function Recetas({ dispositivos }: { dispositivos: Dispositivo[] }) {
                   {conectados.length === 0 && <option value="">Sin teléfonos en línea</option>}
                   {conectados.map((d) => (
                     <option key={d.id} value={d.id}>
-                      {d.modelo} · {d.adb_serial?.slice(-6) ?? d.id.slice(0, 6)}
+                      {etiquetaTelefono(d)}
                     </option>
                   ))}
                 </Selector>
@@ -223,7 +236,36 @@ export function Recetas({ dispositivos }: { dispositivos: Dispositivo[] }) {
                 )}
 
                 {receta.parametros.map((p) =>
-                  p.opciones?.length ? (
+                  p.secreto ? (
+                    usaPinGuardado(p, chipPin) ? (
+                      <div key={p.nombre} className="flex items-center justify-between gap-2 rounded-xl bg-panel-2 px-3.5 h-10 text-sm">
+                        <span>
+                          {p.nombre.toUpperCase()} <span className="text-tenue">guardado en este chip</span>
+                        </span>
+                        <button type="button" className="text-xs text-tenue hover:text-texto" onClick={() => setOtroPin(true)}>
+                          Usar otro
+                        </button>
+                      </div>
+                    ) : (
+                      <div key={p.nombre} className="space-y-2">
+                        <Campo
+                          etiqueta={p.descripcion ?? p.nombre}
+                          type="password"
+                          inputMode="numeric"
+                          autoComplete="off"
+                          className="font-mono"
+                          value={valores[p.nombre] ?? ""}
+                          onChange={(e) => setValores((v) => ({ ...v, [p.nombre]: e.target.value }))}
+                        />
+                        {p.nombre === "pin" && (
+                          <label className="flex items-center gap-2 text-xs text-tenue">
+                            <input type="checkbox" checked={recordarPin} onChange={(e) => setRecordarPin(e.target.checked)} />
+                            Guardar el PIN en este chip
+                          </label>
+                        )}
+                      </div>
+                    )
+                  ) : p.opciones?.length ? (
                     <Selector
                       key={p.nombre}
                       etiqueta={p.nombre}
@@ -268,17 +310,18 @@ export function Recetas({ dispositivos }: { dispositivos: Dispositivo[] }) {
                 {mueve && !simular && (
                   <Aviso tono="aviso">Ejecución real: puede mover saldo. El paso de confirmación nunca se reintenta.</Aviso>
                 )}
+                {errorChip && <Aviso tono="aviso">No pude leer el chip (PIN guardado): {errorChip}</Aviso>}
 
                 <Boton
-                  variante={mueve && !simular && confirmando ? "peligro" : "primario"}
+                  variante="primario"
                   className="w-full"
-                  onClick={ejecutar}
+                  onClick={() => ejecutar()}
                   cargando={corriendo}
                   disabled={!!invalido || !disp}
                   icono={simulando ? <FlaskConical className="size-4" /> : <Play className="size-4" />}
                   title={invalido ?? undefined}
                 >
-                  {simulando ? "Simular" : confirmando ? "Confirmar ejecución real" : "Ejecutar"}
+                  {simulando ? "Simular" : mueve ? "Ejecutar real…" : "Ejecutar"}
                 </Boton>
                 {invalido && receta.parametros.length > 0 && Object.keys(valores).length > 0 && (
                   <p className="text-xs text-tenue">{invalido}</p>
@@ -286,6 +329,15 @@ export function Recetas({ dispositivos }: { dispositivos: Dispositivo[] }) {
               </Tarjeta>
             )}
           </div>
+
+          <DialogoReal
+            abierto={confirmando}
+            cerrar={() => setConfirmando(false)}
+            confirmar={() => ejecutar(true)}
+            receta={receta}
+            valores={valores}
+            chip={disp && sim ? `${etiquetaTelefono(disp)} · ${nombreSim(slot)} · ${etiquetaOperador(sim)}${sim.numero ? ` · ${sinPrefijo(sim.numero)}` : ""}` : ""}
+          />
 
           <div>
             {fallo && <Aviso>{fallo}</Aviso>}
@@ -306,5 +358,64 @@ export function Recetas({ dispositivos }: { dispositivos: Dispositivo[] }) {
         </div>
       )}
     </div>
+  );
+}
+
+/** Confirmación de una receta que mueve saldo, en real: muestra qué se va a enviar y desde qué chip. */
+function DialogoReal({
+  abierto,
+  cerrar,
+  confirmar,
+  receta,
+  valores,
+  chip,
+}: {
+  abierto: boolean;
+  cerrar: () => void;
+  confirmar: () => void;
+  receta: Receta | undefined;
+  valores: Record<string, string>;
+  chip: string;
+}) {
+  const [entendido, setEntendido] = useState(false);
+  useEffect(() => setEntendido(false), [abierto]);
+  if (!receta) return null;
+  const visibles = receta.parametros.filter((p) => !p.secreto && valores[p.nombre]);
+  return (
+    <Dialogo
+      abierto={abierto}
+      cerrar={cerrar}
+      peligro
+      titulo={`Ejecutar «${receta.titulo}» en real`}
+      acciones={
+        <>
+          <Boton variante="fantasma" data-autofocus onClick={cerrar}>
+            Volver
+          </Boton>
+          <Boton variante="peligro" icono={<Play className="size-4" />} disabled={!entendido} onClick={confirmar}>
+            Ejecutar real
+          </Boton>
+        </>
+      }
+    >
+      <p>
+        Esta receta <b>mueve saldo de verdad</b>. El paso de confirmación nunca se reintenta: si se corta después, queda incierta.
+      </p>
+      <dl className="mt-4 grid grid-cols-[auto_1fr] gap-x-6 gap-y-2 rounded-2xl bg-panel-2 px-4 py-3.5">
+        <dt className="text-tenue">Chip</dt>
+        <dd className="text-right">{chip}</dd>
+        {visibles.map((p) => (
+          <div key={p.nombre} className="contents">
+            <dt className="text-tenue">{p.nombre}</dt>
+            <dd className="text-right font-mono font-semibold">{valores[p.nombre]}</dd>
+          </div>
+        ))}
+      </dl>
+      <div className="mt-4">
+        <Casilla marcada={entendido} onCambio={setEntendido}>
+          Revisé el chip y los datos: quiero ejecutarla en real
+        </Casilla>
+      </div>
+    </Dialogo>
   );
 }

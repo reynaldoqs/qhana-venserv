@@ -35,6 +35,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Servicio en primer plano que vive mientras el teléfono esté encendido. Une los módulos:
@@ -46,7 +47,11 @@ class AgenteService : Service() {
     private lateinit var telefonia: Telefonia
     private lateinit var estadoDisp: EstadoDispositivo
     private lateinit var ussd: GestorUssd
-    private var transporte: Transporte? = null
+    @Volatile private var transporte: Transporte? = null
+    private var conexion: Job? = null
+    private val memoria = MemoriaRespuestas()
+    private val candadoSms = Any()
+    @Volatile private var textoNotificacion = "iniciando…"
     private var vigiaEstado: Job? = null
     private var ultimasSims: List<Sim> = emptyList()
     private var escuchaSims: SubscriptionManager.OnSubscriptionsChangedListener? = null
@@ -66,9 +71,10 @@ class AgenteService : Service() {
         cpuDespierta = getSystemService(PowerManager::class.java)
             .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "qhana:agente")
             .apply { setReferenceCounted(false); acquire() }
-        enPrimerPlano("iniciando…")
+        enPrimerPlano(textoNotificacion)
         escucharSims()
-        scope.launch { BusSms.entrantes.collect { enviarSms() } }
+        BusSms.cargar(this) // lo que quedó sin enviar antes de que muriera el proceso
+        scope.launch { BusSms.avisos.collect { enviarSms() } }
         scope.launch {
             while (isActive) {
                 refrescar(soloSiCambia = true)
@@ -78,28 +84,49 @@ class AgenteService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACCION_RECONECTAR || transporte == null) conectar()
+        // Cada startForegroundService exige startForeground de nuevo, aunque el servicio ya esté en primer plano.
+        enPrimerPlano(textoNotificacion)
+        if (intent?.action == ACCION_CANCELAR_USSD) {
+            scope.launch {
+                EstadoApp.anotar("sesión USSD cancelada desde el teléfono")
+                ussd.cancelarTodo()
+            }
+        }
+        if (intent?.action == ACCION_RECONECTAR || conexion == null) conectar()
         return START_STICKY
     }
 
+    /**
+     * (Re)conecta. Protocolo: al reconectar (también el forzado) se cierra antes cualquier sesión USSD abierta.
+     * Corre en el hilo principal (como onStartCommand): dos pedidos seguidos no dejan dos transportes vivos.
+     */
     private fun conectar() {
         transporte?.detener()
+        transporte = null
+        conexion?.cancel()
+        conexion = scope.launch(Dispatchers.Main) {
+            withTimeoutOrNull(CIERRE_USSD_MS) { ussd.cancelarTodo() }
+                ?: Log.w(AgenteApp.TAG, "no se pudo cerrar la sesión USSD antes de reconectar (operación en curso)")
+            abrirTransporte()
+        }
+    }
+
+    private fun abrirTransporte() {
         val url = ajustes.url
         val t = TransporteWebSocket(url, scope)
         transporte = t
-        val despachador = Despachador(scope, ussd, LectorSms(this, telefonia), t::enviar) { refrescar(soloSiCambia = false) }
+        val despachador = Despachador(scope, ussd, LectorSms(this, telefonia), memoria, t::enviar) { refrescar(soloSiCambia = false) }
         EstadoApp.actualizar { it.copy(url = url) }
         vigiaEstado?.cancel()
         vigiaEstado = scope.launch {
             t.estado.collect { info ->
                 EstadoApp.actualizar { it.copy(conexion = info.estado.name.lowercase(), detalleConexion = info.detalle) }
-                enPrimerPlano(
-                    when (info.estado) {
-                        EstadoConexion.CONECTADO -> "conectado a ${info.detalle}"
-                        EstadoConexion.RECHAZADO -> "rechazado: ${info.detalle}"
-                        else -> "${info.estado.name.lowercase()} · $url"
-                    }
-                )
+                textoNotificacion = when (info.estado) {
+                    EstadoConexion.CONECTADO -> "conectado a ${info.detalle}"
+                    EstadoConexion.RECHAZADO -> "rechazado: ${info.detalle}"
+                    else -> "${info.estado.name.lowercase()} · $url"
+                }
+                enPrimerPlano(textoNotificacion)
             }
         }
         t.iniciar(
@@ -112,8 +139,8 @@ class AgenteService : Service() {
             },
             alPerder = {
                 EstadoApp.anotar("conexión perdida")
-                // Protocolo: al reconectar se descartan las sesiones abiertas.
-                scope.launch { ussd.cancelarTodo() }
+                // Protocolo: al reconectar se descartan las sesiones abiertas, antes de volver a conectar.
+                withTimeoutOrNull(CIERRE_USSD_MS) { ussd.cancelarTodo() }
             },
         )
     }
@@ -129,14 +156,18 @@ class AgenteService : Service() {
         t.enviar(estado)
     }
 
+    /**
+     * Envía la cola de SMS en orden. Cada uno sale de la cola solo si se envió; si falla, queda guardado y se reintenta
+     * al reconectar (`alConectar`), sin volver a avisar (nada de reintentos en caliente).
+     */
     private fun enviarSms() {
-        val t = transporte ?: return
-        for (s in BusSms.tomarPendientes()) {
-            if (t.enviar(SmsRecibido(s))) {
+        synchronized(candadoSms) {
+            val t = transporte ?: return
+            while (true) {
+                val s = BusSms.primero() ?: return
+                if (!t.enviar(SmsRecibido(s))) return
+                BusSms.quitar(s)
                 EstadoApp.anotar("SMS de ${s.de} enviado al control")
-            } else {
-                BusSms.publicar(s)
-                return
             }
         }
     }
@@ -176,6 +207,9 @@ class AgenteService : Service() {
 
     override fun onDestroy() {
         transporte?.detener()
+        // Si quedó una sesión USSD abierta, se cierra igual: en un alcance aparte, porque el del servicio se cancela ya.
+        val gestor = ussd
+        CoroutineScope(Dispatchers.Default).launch { withTimeoutOrNull(CIERRE_USSD_MS) { gestor.cancelarTodo() } }
         escuchaSims?.let { runCatching { getSystemService(SubscriptionManager::class.java).removeOnSubscriptionsChangedListener(it) } }
         scope.cancel()
         cpuDespierta?.let { if (it.isHeld) it.release() }
@@ -185,11 +219,20 @@ class AgenteService : Service() {
     companion object {
         private const val NOTIF_ID = 1
         const val ACCION_RECONECTAR = "bo.qhana.agente.RECONECTAR"
+        const val ACCION_CANCELAR_USSD = "bo.qhana.agente.CANCELAR_USSD"
+
+        /** Tope para cerrar la sesión USSD antes de reconectar: si hay una operación en curso no se espera más. */
+        private const val CIERRE_USSD_MS = 10_000L
 
         fun arrancar(context: Context, reconectar: Boolean = false) {
             val i = Intent(context, AgenteService::class.java)
             if (reconectar) i.action = ACCION_RECONECTAR
             context.startForegroundService(i)
+        }
+
+        /** Cierra la sesión USSD abierta. Solo desde la app en primer plano (usa startService, no de primer plano). */
+        fun cancelarUssd(context: Context) {
+            context.startService(Intent(context, AgenteService::class.java).setAction(ACCION_CANCELAR_USSD))
         }
     }
 }

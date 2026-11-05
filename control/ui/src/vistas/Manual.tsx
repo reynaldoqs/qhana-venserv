@@ -1,6 +1,6 @@
 import { useEffect, type ReactNode } from "react";
 import { api } from "../api/cliente";
-import { Aviso, Insignia, Tarjeta, Titulo, cx } from "../componentes/base";
+import { Aviso, BotonDescarga, Insignia, Tarjeta, Titulo, cx } from "../componentes/base";
 import { Download } from "../componentes/iconos";
 
 type Tono = "neutro" | "ok" | "aviso" | "error" | "info";
@@ -12,14 +12,16 @@ const SECCIONES = [
   ["inicio", "Primeros pasos"],
   ["telefonos", "Teléfonos y chips"],
   ["csv", "El CSV del lote"],
+  ["recargas", "Recargas y chips dealer"],
   ["validacion", "Validar antes de ejecutar"],
   ["lote", "Estados del lote"],
   ["filas", "Estados de cada fila"],
   ["verificar", "Verificar saldos"],
   ["resultado", "CSV de resultados"],
-  ["chips", "Cupos, saldos y chips PDA"],
+  ["chips", "Cupos, saldos y chips dealer"],
   ["catalogo", "Catálogo de recetas"],
   ["ussd", "USSD, recetas y SMS"],
+  ["editar", "Editar recetas"],
   ["problemas", "Si algo sale mal"],
 ] as const;
 
@@ -34,7 +36,7 @@ type RecetaDoc = {
   params: string;
   salida: string;
   nota: string;
-  pda?: boolean;
+  dealer?: boolean;
 };
 
 const RECETAS: RecetaDoc[] = [
@@ -94,16 +96,40 @@ const RECETAS: RecetaDoc[] = [
     nota: "Solo consulta.",
   },
   {
-    nombre: "entel-pda-recargar",
-    titulo: "Recargar saldo (Entel PDA)",
+    nombre: "entel-dealer-recargar",
+    titulo: "Recargar saldo (Entel dealer)",
     operador: "ENTEL",
     tipo: "Mueve dinero",
     codigo: "*133*número*monto#",
     pasos: "Marca el código completo, verifica «recargar Bs … al telefono», confirma «Si».",
     params: "numero (8 dígitos) · monto: solo «050» (= Bs 0.50, en centavos con 3 dígitos)",
     salida: "saldo_transferencia, monto_bs",
-    nota: "Solo para chips marcados PDA (dealer). Por ahora solo se verificó el monto 050; agregar otros únicamente tras probar cómo los muestra la confirmación.",
-    pda: true,
+    nota: "Solo para chips marcados dealer. Por ahora solo se verificó el monto 050; agregar otros únicamente tras probar cómo los muestra la confirmación.",
+    dealer: true,
+  },
+  {
+    nombre: "tigo-dealer-saldo",
+    titulo: "Saldo dealer",
+    operador: "TIGO",
+    tipo: "Consulta",
+    codigo: "*555# → 8",
+    pasos: "Marca *555#, elige 8 y, al pedir el PIN, envía el PIN del dealer.",
+    params: "pin (se toma del PIN guardado en el chip)",
+    salida: "saldo_dealer",
+    nota: "Solo chips Tigo marcados dealer. No mueve dinero, pero envía el PIN: varios PIN errados pueden bloquear el dealer. El control no la corre solo (no es la consulta de saldo automática). Textos de *555# aún sin medir.",
+    dealer: true,
+  },
+  {
+    nombre: "tigo-dealer-recargar",
+    titulo: "Recarga de crédito dealer",
+    operador: "TIGO",
+    tipo: "Mueve dinero",
+    codigo: "*555# → 3 → 2",
+    pasos: "Marca *555#, elige 3 y luego 2, envía el monto en Bs, el número del cliente y, al pedir el PIN, el PIN del dealer.",
+    params: "numero (8 dígitos) · monto en Bs (p. ej. 1.50) · pin (se toma del PIN guardado en el chip)",
+    salida: "—",
+    nota: "Solo para chips Tigo marcados dealer. El PIN se guarda con «Guardar PIN» en la tarjeta del chip y nunca aparece en el historial. Simular se detiene antes de enviar el PIN. Los textos de *555# aún no están medidos: la receta solo exige que la pantalla antes del PIN pida el PIN.",
+    dealer: true,
   },
   {
     nombre: "viva-saldo",
@@ -123,11 +149,25 @@ const EJEMPLO = `numero;monto;operador;referencia
 +591 7881-5232;Bs 5;tigo;Pedido 1002
 71234567;20;TIGO;Pedido 1003`;
 
+const EJEMPLO_RECARGAS = `numero,monto,operador,accion,referencia
+69869869,0.50,ENTEL,recargar,Cliente 1
+78815232,5,TIGO,recargar,Cliente 2
+71234567,12.30,TIGO,recargar,Cliente 3`;
+
+const EJEMPLO_MIXTO = `numero,monto,operador,accion,referencia
+69869869,10,TIGO,transferir,Pedido 1001
+78815232,5,TIGO,recargar,Pedido 1002
+71234567,0.50,ENTEL,recargar,Pedido 1003`;
+
+const EJEMPLO_CHIPS = `numero,monto,operador,referencia
+69869869,5,TIGO,Cliente 1
+71234567,0.50,ENTEL,Cliente 2`;
+
 const COLUMNAS: [string, string, string][] = [
   ["numero", "Sí", "8 dígitos. Se limpian espacios, guiones, puntos y el prefijo +591 o 591."],
-  ["monto", "Sí", "Entero en Bs: 12, 12.00, 12,00 o «Bs 12». Con centavos distintos de cero es error."],
-  ["operador", "Sí", "TIGO, ENTEL o VIVA (también NUEVATEL). Mayúsculas y acentos no importan. No se deduce del número porque hay portabilidad."],
-  ["accion", "No", "Qué hacer. Si falta, es «transferir»."],
+  ["monto", "Sí", "Bs con hasta 2 decimales: 12, 12,00, «Bs 12», 1.50. Con centavos solo si la receta no tiene montos fijos: transferir Tigo (1, 2, 5, 10, 20) no los acepta; la recarga dealer sí."],
+  ["operador", "Sí (en «Desde chips elegidos», solo si los chips son de varios operadores)", "TIGO, ENTEL o VIVA (también NUEVATEL). Mayúsculas y acentos no importan. No se deduce del número porque hay portabilidad."],
+  ["accion", "No", "Qué hacer: «transferir» (si falta) o «recargar». En «Desde chips elegidos» manda la acción elegida y la columna se ignora."],
   ["referencia", "No", "Texto libre (n.º de pedido, nombre). Vuelve igual en el CSV de resultados."],
 ];
 
@@ -163,7 +203,7 @@ const ESTADOS_FILA: Estado[] = [
   ["info", "Simulada", "Lote de simulación: llegó hasta la confirmación y respondió «No». No movió dinero."],
   ["aviso", "Parcial", "Una fila de 12 Bs se parte en 10 + 2. Parcial = algunos envíos salieron y otros no.", "Reintenta fallidas: solo repite las piezas fallidas, nunca las OK."],
   ["error", "Fallida", "No se movió dinero (falló antes de confirmar).", "Es seguro reintentar."],
-  ["error", "Incierta", "Se confirmó, pero no llegó la respuesta del operador. No se sabe si el dinero salió. El lote se pausa.", "Revisa el saldo del chip y el SMS del operador antes de seguir. Nunca se reintenta sola."],
+  ["error", "Incierta", "Se confirmó, pero no llegó la respuesta del operador. No se sabe si el dinero salió. El lote sigue con las demás filas.", "Revisa el saldo del chip y el SMS del operador. Nunca se reintenta sola: si no llegó, usa «Reintentar inciertas» (pide confirmar que lo revisaste)."],
   ["aviso", "Para mañana", "Ningún chip tiene cupo o saldo para esta fila.", "Vuelve a Iniciar otro día (o con más saldo): retoma solo lo pendiente."],
 ];
 
@@ -345,13 +385,9 @@ export function Manual({ seccion, ir }: { seccion: string; ir: (id: string) => v
 
             <Sub>Ejemplo</Sub>
             <pre className="rounded-xl bg-panel-2 p-4 font-mono text-[12px] overflow-x-auto">{EJEMPLO}</pre>
-            <a
-              href={api.urlPlantilla}
-              download
-              className="inline-flex items-center gap-2 h-9 px-4 rounded-full bg-panel-2 text-xs font-semibold hover:brightness-125 transition"
-            >
-              <Download className="size-4" /> Descargar plantilla.csv
-            </a>
+            <BotonDescarga descargar={() => api.descargarPlantilla()} className="h-9 px-4 text-xs" icono={<Download className="size-4" />}>
+              Descargar plantilla.csv
+            </BotonDescarga>
 
             <Sub>Reglas del archivo</Sub>
             <ul className="list-disc pl-5 space-y-1.5">
@@ -367,7 +403,68 @@ export function Manual({ seccion, ir }: { seccion: string; ir: (id: string) => v
               </li>
               <li>Máximo 5 000 filas por lote.</li>
               <li>
+                <b>Desde chips elegidos</b>: en Nuevo lote elige ese tipo, marca uno o varios chips y la acción (recargar o transferir). Ver <a href="#manual/recargas" className="underline underline-offset-2">Recargas y chips dealer</a>.
+              </li>
+              <li>
                 <b>Montos grandes se parten</b> en los montos que permite la receta (12 → 10 + 2; 37 → 20 + 10 + 5 + 2), usando la menor cantidad de envíos. Cada envío cuesta comisión.
+              </li>
+            </ul>
+          </Seccion>
+
+          <Seccion
+            id="recargas"
+            titulo="Lotes de recargas y chips dealer"
+            intro="Recargas de crédito desde chips dealer, de uno o varios operadores, en paralelo."
+          >
+            <Sub>Los montos van en Bs</Sub>
+            <p>
+              Siempre en Bs, con punto o coma: <Codigo>0.50</Codigo>, <Codigo>5</Codigo>, <Codigo>12.30</Codigo>. Cada receta lo traduce sola a lo que
+              pide su USSD (Entel dealer marca <Codigo>050</Codigo> para Bs 0.50). Una receta con montos fijos (transferir Tigo: 1, 2, 5, 10, 20) no
+              acepta centavos.
+            </p>
+
+            <Sub>Recargas de varios operadores</Sub>
+            <p>
+              Tipo «Recargas de varios operadores». Cada fila dice su operador y <Codigo>accion</Codigo> <Codigo>recargar</Codigo>; va a los chips dealer
+              de ese operador (los normales no corren recetas dealer). Un chip dealer cuya receta pide PIN y no lo tiene guardado no recibe envíos.
+            </p>
+            <pre className="rounded-xl bg-panel-2 p-4 font-mono text-[12px] overflow-x-auto">{EJEMPLO_RECARGAS}</pre>
+
+            <Sub>Transferencias y recargas mezcladas</Sub>
+            <p>
+              En «Transferencias», la columna <Codigo>accion</Codigo> decide fila por fila: <Codigo>transferir</Codigo> (o vacía) usa los chips del
+              operador; <Codigo>recargar</Codigo>, sus chips dealer.
+            </p>
+            <pre className="rounded-xl bg-panel-2 p-4 font-mono text-[12px] overflow-x-auto">{EJEMPLO_MIXTO}</pre>
+
+            <Sub>Desde chips elegidos</Sub>
+            <p>
+              Marcas los chips (p. ej. «Solo los dealer») y la acción, que vale para todas las filas. Si todos los chips son de un operador basta con{" "}
+              <Codigo>numero,monto</Codigo>; si son de varios, va la columna <Codigo>operador</Codigo>. Un chip elegido que no sirve (sin PIN, sin
+              receta) queda fuera con un aviso si los demás alcanzan.
+            </p>
+            <pre className="rounded-xl bg-panel-2 p-4 font-mono text-[12px] overflow-x-auto">{EJEMPLO_CHIPS}</pre>
+            <div className="flex flex-wrap gap-2">
+              {(["recargas", "chips"] as const).map((t) => (
+                <BotonDescarga key={t} descargar={() => api.descargarPlantilla(t)} className="h-9 px-4 text-xs" icono={<Download className="size-4" />}>
+                  Plantilla de {t === "recargas" ? "recargas" : "chips elegidos"}
+                </BotonDescarga>
+              ))}
+            </div>
+
+            <Sub>Cómo trabajan en paralelo</Sub>
+            <ul className="list-disc pl-5 space-y-1.5">
+              <li>
+                Cada <b>teléfono</b> hace un envío a la vez (Android permite una sola sesión USSD por teléfono). Los teléfonos trabajan en paralelo,
+                sin importar el operador.
+              </li>
+              <li>Los dos chips de un mismo teléfono se turnan: mientras uno envía, el otro espera.</li>
+              <li>Con un solo chip, el lote va en serie. Para ir más rápido, reparte los chips dealer en teléfonos distintos.</li>
+              <li>
+                En el detalle del lote, «Carriles por teléfono» muestra qué hace cada chip, cuánto lleva y cuándo termina más o menos.
+              </li>
+              <li>
+                Al verificar, cada chip se cuadra con su saldo: el principal lo transferido y el dealer lo recargado (consultarlo envía el PIN guardado).
               </li>
             </ul>
           </Seccion>
@@ -412,7 +509,13 @@ export function Manual({ seccion, ir }: { seccion: string; ir: (id: string) => v
                 <b>Cancelar</b>: no se puede deshacer.
               </li>
               <li>
-                <b>Reintentar fallidas</b>: devuelve a pendiente solo los envíos fallidos (seguro: no movieron dinero). Después hay que pulsar Iniciar. No funciona si hay una fila <Insignia tono="error">Incierta</Insignia> sin resolver.
+                <b>Reintentar fallidas</b>: devuelve a pendiente solo los envíos fallidos (seguro: no movieron dinero) y reanuda el lote. De una fila parcial solo se repiten las piezas que fallaron.
+              </li>
+              <li>
+                <b>Reintentar inciertas</b>: igual, pero también con las filas <Insignia tono="error">Incierta</Insignia>. Solo después de revisar el saldo o el historial del chip y ver que no llegaron: si llegaron, se envían dos veces.
+              </li>
+              <li>
+                <b>Archivar</b> (menú «⋯» de un lote terminado o cancelado): lo saca de la lista por defecto. Sigue en la pestaña «Archivados» y se puede sacar del archivo.
               </li>
               <li>Si se reinicia el control, un lote «En curso» pasa a «Pausado».</li>
             </ul>
@@ -484,7 +587,7 @@ export function Manual({ seccion, ir }: { seccion: string; ir: (id: string) => v
             </div>
           </Seccion>
 
-          <Seccion id="chips" titulo="Cupos, saldos y chips PDA" intro="Todo esto es del chip, no de la ranura ni del teléfono.">
+          <Seccion id="chips" titulo="Cupos, saldos y chips dealer" intro="Todo esto es del chip, no de la ranura ni del teléfono.">
             <ul className="list-disc pl-5 space-y-2">
               <li>
                 <b>Cupo de hoy</b>: máximo de envíos por chip y por día (lo fija la receta, p. ej. 5 en Tigo). Se cuentan los envíos OK de hoy de ese chip, esté donde esté.
@@ -502,7 +605,7 @@ export function Manual({ seccion, ir }: { seccion: string; ir: (id: string) => v
                 <b>Cambiar chips</b> es normal: el control reconoce el chip por su ICCID o su número. Un chip nuevo arranca en cero; si vuelve uno ya visto, conserva su historial.
               </li>
               <li>
-                <Insignia tono="info">PDA</Insignia> marca chips especiales con USSD y límites propios. Android no dice cuáles son: se marcan a mano con «Marcar PDA» en la tarjeta del chip. Usan la receta PDA si existe y, si no, la normal del operador. Un chip nuevo siempre entra como normal.
+                <Insignia tono="info">Dealer</Insignia> marca chips especiales con USSD y límites propios. Android no dice cuáles son: se marcan a mano con «Marcar dealer» en la tarjeta del chip. Usan la receta dealer si existe y, si no, la normal del operador. Un chip nuevo siempre entra como normal. Al marcar dealer un chip Tigo se ofrece guardar su PIN de dealer («Guardar PIN» / «Cambiar PIN»): queda en la base del control, sigue al chip y nunca sale por la API ni en el historial.
               </li>
             </ul>
           </Seccion>
@@ -515,7 +618,7 @@ export function Manual({ seccion, ir }: { seccion: string; ir: (id: string) => v
                     <span className="font-semibold">{r.titulo}</span>
                     <Insignia tono="neutro">{r.operador}</Insignia>
                     <Insignia tono={r.tipo === "Consulta" ? "ok" : "aviso"}>{r.tipo}</Insignia>
-                    {r.pda && <Insignia tono="info">Solo PDA</Insignia>}
+                    {r.dealer && <Insignia tono="info">Solo dealer</Insignia>}
                   </div>
                   <p className="text-xs">
                     <Codigo>{r.nombre}</Codigo> · <span className="font-mono text-tenue">{r.codigo}</span>
@@ -538,7 +641,7 @@ export function Manual({ seccion, ir }: { seccion: string; ir: (id: string) => v
                 Los lotes usan por operador la receta <Codigo>transferir</Codigo> (envío) y <Codigo>saldo</Codigo> (consultar saldos). <b className="text-texto">Hoy solo Tigo tiene receta de transferir</b>: una fila ENTEL o VIVA sale con Error «no hay receta».
               </li>
               <li>
-                Un chip PDA usa la receta PDA de la misma acción si existe (Entel: recargar); para lo demás cae a la receta normal del operador.
+                Un chip dealer usa la receta dealer de la misma acción si existe (Entel y Tigo: recargar); para lo demás cae a la receta normal del operador.
               </li>
               <li>
                 Las recetas nuevas se agregan como archivo YAML; el formato está en <Codigo>docs/protocolo.md</Codigo>.
@@ -566,6 +669,55 @@ export function Manual({ seccion, ir }: { seccion: string; ir: (id: string) => v
             </ul>
           </Seccion>
 
+          <Seccion
+            id="editar"
+            titulo="Editar recetas"
+            intro="Las recetas se pueden crear y cambiar desde aquí. Siguen siendo archivos YAML en control/recetas: lo que guardes queda en ese archivo."
+          >
+            <Pasos
+              items={[
+                <>
+                  En <b>Recetas</b> abre una y pulsa <b>Editar</b>. Hay dos modos sobre el mismo archivo: <b>Visual</b> (un formulario por paso) y{" "}
+                  <b>YAML</b> (el texto). Los comentarios del archivo se conservan al editar en Visual.
+                </>,
+                <>
+                  Cada paso tiene una acción: <b>Marcar</b> (el código), <b>Enviar</b> (un texto), <b>Elegir</b> (una opción del menú),{" "}
+                  <b>Verificar</b> (exige que la pantalla diga algo, sin enviar nada) y <b>Confirmar</b> (la opción que mueve dinero). Con «+» agregas
+                  Esperar, Error si, Éxito o un tiempo máximo. Los parámetros se escriben entre llaves: <Codigo>{"{monto}"}</Codigo>.
+                </>,
+                <>
+                  Mientras escribes, el control revisa la receta: los <b className="text-error">errores</b> impiden guardar; los{" "}
+                  <b className="text-aviso">avisos</b> no, pero conviene leerlos (p. ej. «el paso que mueve dinero no tiene éxito»).
+                </>,
+                <>
+                  <b>Probar</b> (en cada paso): pega la pantalla del operador, o elige una ejecución reciente, y verás qué contestaría el motor, qué
+                  opción elegiría y si esperar/error/éxito coinciden. No marca nada.
+                </>,
+                <>
+                  Al guardar, la versión anterior queda en el historial. Si la receta mueve dinero, aparece <Insignia tono="error">Sin probar</Insignia>{" "}
+                  hasta que una ejecución (aunque sea simulada) termine bien: <b>simúlala</b> antes de usarla en real.
+                </>,
+              ]}
+            />
+            <Sub>Versiones</Sub>
+            <p className="text-tenue">
+              En la pestaña <b className="text-texto">Versiones</b> de cada receta están las copias anteriores (en <Codigo>recetas/viejo/</Codigo>). Puedes ver qué
+              cambió respecto de la actual y <b className="text-texto">restaurar</b> una: la actual también queda guardada. <b className="text-texto">Retirar</b> una
+              receta mueve su archivo a <Codigo>recetas/viejo/</Codigo>; nunca se borra. Los lotes que ya corren siguen con su copia.
+            </p>
+            <Sub>Crear una receta desde la consola</Sub>
+            <p className="text-tenue">
+              Haz el recorrido a mano en la <b className="text-texto">Consola USSD</b> (mejor con un menú de solo consulta) y pulsa{" "}
+              <b className="text-texto">Guardar como receta</b>. Marca qué respuestas eran un PIN: se guardan como <Codigo>{"{pin}"}</Codigo> y el PIN nunca se
+              guarda. Se abre el editor con un borrador: ponle nombre, revisa cada paso y marca el que mueve dinero, si lo hay.
+            </p>
+            <Sub>Si alguien más la cambia</Sub>
+            <p className="text-tenue">
+              Si la receta se guarda en otro lado mientras la editas, verás un aviso. Al guardar podrás ver las diferencias, quedarte con la guardada o guardar
+              la tuya encima.
+            </p>
+          </Seccion>
+
           <Seccion id="problemas" titulo="Si algo sale mal">
             <div className="overflow-x-auto">
               <table className="w-full text-left">
@@ -578,7 +730,8 @@ export function Manual({ seccion, ir }: { seccion: string; ir: (id: string) => v
                 <tbody>
                   {(
                     [
-                      ["El lote se pausó solo", "Lee el motivo arriba. Si hay una fila Incierta: revisa el saldo del chip y el SMS del operador, y recién ahí decide."],
+                      ["El lote se pausó solo", "Lee el motivo arriba (p. ej. no se pudo guardar en la base, o se reinició el control) y reanúdalo cuando esté resuelto."],
+                      ["Fila Incierta", "Revisa el saldo del chip y el SMS del operador. Si no llegó, «Reintentar inciertas»; si llegó, déjala así."],
                       ["Muchas filas «Para mañana»", "Faltó cupo o saldo. Recarga los chips o espera al día siguiente y vuelve a Iniciar."],
                       ["Fila Fallida", "Mira el detalle. Si fue transitorio (red, ocupado), Reintentar fallidas. Si el dato es malo (número inválido), corrígelo en un lote nuevo."],
                       ["Verificar da «Diferencia»", "Alguien usó el chip por fuera, o hay un envío incierto. Mira el historial del chip en Actividad."],

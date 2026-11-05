@@ -10,11 +10,23 @@ pub struct ApiError {
     pub status: StatusCode,
     pub codigo: String,
     pub detalle: String,
+    /// Solo `receta_invalida`: la lista `[{paso, campo, mensaje}]`.
+    pub errores: Option<serde_json::Value>,
 }
 
 impl ApiError {
     pub fn new(status: StatusCode, codigo: &str, detalle: impl Into<String>) -> Self {
-        Self { status, codigo: codigo.into(), detalle: detalle.into() }
+        Self { status, codigo: codigo.into(), detalle: detalle.into(), errores: None }
+    }
+    /// `400 receta_invalida` con `detalle` (los errores en una línea) y la lista `errores`.
+    pub fn receta_invalida(errores: &[nucleo::receta::ErrorReceta]) -> Self {
+        let detalle: Vec<String> = errores.iter().map(|e| e.to_string()).collect();
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            codigo: codigos::RECETA_INVALIDA.into(),
+            detalle: format!("receta inválida: {}", detalle.join("; ")),
+            errores: Some(serde_json::to_value(errores).unwrap_or_default()),
+        }
     }
     pub fn parametro(detalle: impl Into<String>) -> Self {
         Self::new(StatusCode::BAD_REQUEST, codigos::PARAMETRO, detalle)
@@ -36,13 +48,13 @@ impl From<ErrorCanal> for ApiError {
             codigos::RED => StatusCode::BAD_GATEWAY,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
-        Self { status, codigo: e.codigo, detalle: e.detalle }
+        Self { status, codigo: e.codigo, detalle: e.detalle, errores: None }
     }
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        (self.status, Json(CuerpoError { error: DetalleError { codigo: self.codigo, detalle: self.detalle } }))
+        (self.status, Json(CuerpoError { error: DetalleError { codigo: self.codigo, detalle: self.detalle, errores: self.errores } }))
             .into_response()
     }
 }

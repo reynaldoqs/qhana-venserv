@@ -1,0 +1,29 @@
+nombre: entel-dealer-recargar
+nombres_anteriores: [entel-pda-recargar]
+titulo: Recargar saldo (Entel dealer)
+operador: ENTEL
+descripcion: Recarga de saldo a otro número desde un chip Entel dealer con *133*número*monto#. El monto se escribe en Bs; el código lleva Bs enteros (1 = Bs 1) y la única fracción es Bs 0.50 (050). Pide confirmación (1 Si / 2 No); el saldo de transferencia que queda se lee de la respuesta. MUEVE DINERO; solo en chips marcados dealer.
+modo: pantalla
+accion: recargar
+chip_tipo: dealer
+parametros:
+  - { nombre: numero, patron: '^[67]\d{7}$' }
+  # 2026-11-05: el monto va en Bs (formato base, como en el CSV y el panel) y el código usa el valor calculado
+  # {monto_cent3}. Antes la opción era "050" (centavos) y el control la leía como 50 Bs: un lote habría marcado
+  # *133*N*50# anotando 50 Bs. La versión anterior quedó en viejo/.
+  # Verificado el 2026-10-30: 050 → "Bs. 0.50". 2026-11-05 (Rey): *133*N*1# recarga Bs 1; la única fracción es
+  # 0.50, el resto son Bs enteros. Por eso el código usa {monto_mixto} (0.50 → 050, 5 → 5) y no {monto_cent3}
+  # (que para Bs 1 marcaría 100). Montos libres con patrón: un lote manda cada fila en un solo envío.
+  - { nombre: monto, patron: '^(0\.50|[1-9]\d*)$' }
+pasos:
+  - marcar: "*133*{numero}*{monto_mixto}#"
+    error_si: 'numero de dealer no existe'
+    esperar: 'Esta seguro de recargar'
+  # "Esta seguro de recargar Bs. 0.50 al telefono 6xxxxxxx". Si el monto o el número no son los pedidos, se
+  # cancela sin confirmar. `(\.00)?` acepta un monto entero mostrado con centavos (1 → 1.00), no 1 → 10.00.
+  - verificar: 'recargar Bs\.\s*{monto}(\.00)?\s+al telefono {numero}\b'
+  - confirmar: 'Si'
+    exito: 'Se ha transferido Bs\.\s*[\d.]+ a la linea {numero}'
+salida:
+  saldo_transferencia: 'saldo actual para transferencia es de Bs\.\s*([\d.,]+)'
+  monto_bs: 'transferido Bs\.\s*([\d.]+)'

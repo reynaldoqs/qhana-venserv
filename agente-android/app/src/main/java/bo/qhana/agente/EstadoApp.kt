@@ -16,6 +16,8 @@ object EstadoApp {
         val permisosFaltantes: List<String> = emptyList(),
         val accesibilidad: Boolean = false,
         val ultimoUssd: String = "",
+        /** Id de la sesión USSD abierta, o null si no hay ninguna. */
+        val sesionUssd: String? = null,
         val registro: List<String> = emptyList(),
     )
 

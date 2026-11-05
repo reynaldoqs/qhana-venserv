@@ -20,6 +20,7 @@ import bo.qhana.agente.protocolo.UssdResponder
 import bo.qhana.agente.sms.LectorSms
 import bo.qhana.agente.ussd.FalloUssd
 import bo.qhana.agente.ussd.GestorUssd
+import bo.qhana.agente.ussd.ReglasUssd
 import bo.qhana.agente.ussd.RespuestaUssd
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -29,53 +30,73 @@ import kotlinx.coroutines.launch
 /**
  * Traduce peticiones del control a llamadas a los módulos y devuelve la respuesta.
  * Cada petición corre en su propia corrutina: un USSD largo no bloquea un `ping`.
+ * Un `req` repetido no se vuelve a ejecutar: se contesta con la respuesta guardada (ver [MemoriaRespuestas]).
  */
 class Despachador(
     private val scope: CoroutineScope,
     private val ussd: GestorUssd,
     private val sms: LectorSms,
+    private val memoria: MemoriaRespuestas,
     private val enviar: (Mensaje) -> Boolean,
     private val alRefrescar: () -> Unit,
 ) {
     fun manejar(m: Mensaje) {
         if (m !is ConReq) return
+        val (respuesta, nueva) = memoria.registrar(m.req)
         scope.launch(Dispatchers.Default) {
-            val respuesta: Mensaje = try {
-                when (m) {
-                    is Ping -> Pong(m.req)
-                    is UssdIniciar -> {
-                        EstadoApp.anotar("→ ${m.codigo} (slot ${m.slot}, ${m.modo})")
-                        ussd.iniciar(m.slot, m.codigo, m.modo, m.timeoutMs).aMensaje(m.req)
-                    }
-                    is UssdResponder -> {
-                        EstadoApp.anotar("→ responder \"${m.texto}\"")
-                        ussd.responder(m.sesion, m.texto, m.timeoutMs).aMensaje(m.req)
-                    }
-                    is UssdCancelar -> {
-                        ussd.cancelar(m.sesion)
-                        EstadoApp.anotar("→ cancelar")
-                        Ok(m.req)
-                    }
-                    is SmsListar -> SmsLista(m.req, sms.listar(m.slot, m.desdeMs, m.limite))
-                    is Refrescar -> {
-                        alRefrescar()
-                        Ok(m.req)
-                    }
-                    else -> Fallo(m.req, CodigoError.PARAMETRO, "Petición no soportada por el agente: ${m::class.simpleName}")
-                }
-            } catch (e: FalloUssd) {
-                EstadoApp.anotar("✗ ${e.codigo}: ${e.message}")
-                Fallo(m.req, e.codigo, e.message ?: "")
-            } catch (e: SecurityException) {
-                Fallo(m.req, CodigoError.SIN_PERMISO, e.message ?: "permiso denegado")
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.e(AgenteApp.TAG, "error manejando ${m::class.simpleName}", e)
-                Fallo(m.req, CodigoError.DESCONOCIDO, e.toString())
+            if (!nueva) {
+                EstadoApp.anotar("↺ petición repetida (${m.req.take(8)}): se reenvía la respuesta, no se ejecuta")
+                val r = respuesta.await()
+                if (!enviar(r)) Log.w(AgenteApp.TAG, "sin conexión: se perdió la respuesta repetida a ${m.req}")
+                return@launch
             }
-            if (!enviar(respuesta)) Log.w(AgenteApp.TAG, "sin conexión: se perdió la respuesta a ${m.req}")
+            val r = try {
+                ejecutar(m)
+            } catch (e: CancellationException) {
+                // Si la corrutina se cancela, quien espere la repetición no queda colgado.
+                respuesta.complete(Fallo(m.req, CodigoError.DESCONOCIDO, "La petición se interrumpió en el agente"))
+                throw e
+            }
+            respuesta.complete(r)
+            if (!enviar(r)) Log.w(AgenteApp.TAG, "sin conexión: se perdió la respuesta a ${m.req}")
         }
+    }
+
+    private suspend fun ejecutar(m: ConReq): Mensaje = try {
+        when (m) {
+            is Ping -> Pong(m.req)
+            is UssdIniciar -> {
+                // Nunca el código completo en el registro visible: puede llevar un número, un monto o un PIN.
+                EstadoApp.anotar("→ ${ReglasUssd.enmascarar(m.codigo)} (slot ${m.slot}, ${m.modo})")
+                ussd.iniciar(m.slot, m.codigo, m.modo, m.timeoutMs).aMensaje(m.req)
+            }
+            is UssdResponder -> {
+                // Solo el largo: el texto puede ser el PIN (protocolo: "Validaciones del agente antes de marcar").
+                EstadoApp.anotar("→ responder (${m.texto.length} caracteres)")
+                ussd.responder(m.sesion, m.texto, m.timeoutMs).aMensaje(m.req)
+            }
+            is UssdCancelar -> {
+                ussd.cancelar(m.sesion)
+                EstadoApp.anotar("→ cancelar")
+                Ok(m.req)
+            }
+            is SmsListar -> SmsLista(m.req, sms.listar(m.slot, m.desdeMs, m.limite))
+            is Refrescar -> {
+                alRefrescar()
+                Ok(m.req)
+            }
+            else -> Fallo(m.req, CodigoError.PARAMETRO, "Petición no soportada por el agente: ${m::class.simpleName}")
+        }
+    } catch (e: FalloUssd) {
+        EstadoApp.anotar("✗ ${e.codigo}: ${e.message}")
+        Fallo(m.req, e.codigo, e.message ?: "")
+    } catch (e: SecurityException) {
+        Fallo(m.req, CodigoError.SIN_PERMISO, e.message ?: "permiso denegado")
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Log.e(AgenteApp.TAG, "error manejando ${m::class.simpleName}", e)
+        Fallo(m.req, CodigoError.DESCONOCIDO, e.toString())
     }
 
     private fun RespuestaUssd.aMensaje(req: String): Ussd {

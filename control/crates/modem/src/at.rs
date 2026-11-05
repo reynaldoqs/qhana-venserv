@@ -155,9 +155,10 @@ impl<E: Enlace> Modem<E> {
             return Ok(sim);
         }
 
+        let re_iccid = Regex::new(r#"CCID:\s*"?([0-9A-Fa-f]{18,22})"#).unwrap();
         for cmd in ["AT^ICCID?", "AT+QCCID", "AT+CCID"] {
             let r = self.at(cmd, t)?;
-            if let Some(c) = Regex::new(r#"CCID:\s*"?([0-9A-Fa-f]{18,22})"#).unwrap().captures(&r) {
+            if let Some(c) = re_iccid.captures(&r) {
                 sim.iccid = Some(c[1].to_string());
                 break;
             }

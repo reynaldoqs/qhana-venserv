@@ -45,6 +45,11 @@ import {
   ArrowRight01Icon,
   Xls01Icon,
   HelpCircleIcon,
+  ArrowUp01Icon,
+  ArrowDown01Icon,
+  Delete02Icon,
+  TestTube01Icon,
+  PencilEdit02Icon,
 } from "@hugeicons/core-free-icons";
 
 type Props = { className?: string };
@@ -100,6 +105,11 @@ export const Check = hacer(Tick02Icon);
 export const Key = hacer(Key01Icon);
 export const Megaphone = hacer(Megaphone01Icon);
 export const ArrowRight = hacer(ArrowRight01Icon);
+export const ArrowUp = hacer(ArrowUp01Icon);
+export const ArrowDown = hacer(ArrowDown01Icon);
+export const Trash = hacer(Delete02Icon);
+export const TestTube = hacer(TestTube01Icon);
+export const Pencil = hacer(PencilEdit02Icon);
 
 const HGira = hacer(Loading03Icon);
 export const Loader2 = ({ className = "size-4 animate-spin" }: Props) => <HGira className={className} />;

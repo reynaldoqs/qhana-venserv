@@ -22,7 +22,7 @@ pub fn empaquetar(s: &str) -> String {
 }
 
 fn de_hex(h: &str) -> Option<Vec<u8>> {
-    if h.len() % 2 != 0 || !h.is_ascii() {
+    if !h.len().is_multiple_of(2) || !h.is_ascii() {
         return None;
     }
     (0..h.len()).step_by(2).map(|i| u8::from_str_radix(&h[i..i + 2], 16).ok()).collect()

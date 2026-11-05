@@ -1,42 +1,25 @@
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { Cable, RefreshCw, Smartphone, Wallet, CheckCircle2, TriangleAlert, Activity } from "../componentes/iconos";
-import { api } from "../api/cliente";
-import { useEvento } from "../api/eventos";
+import { api, FalloApi, mensajeError } from "../api/cliente";
+import { bus, useAlReconectar, useEvento } from "../api/eventos";
 import type { AdbDispositivo, ChipInfo, Dispositivo, TipoChip } from "../api/tipos";
-import { Aviso, Boton, Esqueleto, Insignia, Tarjeta, Titulo, Vacio, cx, useToast } from "../componentes/base";
+import { Aviso, Boton, Cifra as CifraBase, Esqueleto, Insignia, Tarjeta, Titulo, Vacio, cx, useToast } from "../componentes/base";
 import { TarjetaDispositivo, estadoSim, simsConChip } from "../componentes/dispositivo";
-import { etiquetaOperador, hace } from "../util/datos";
+import { etiquetaOperador, hace, useAgrupar } from "../util/datos";
 
-function Cifra({
-  i,
-  icono,
-  etiqueta,
-  valor,
-  total,
-  tono,
-}: {
-  i: number;
-  icono: ReactNode;
-  etiqueta: string;
-  valor: number;
-  total?: number;
-  tono?: string;
-}) {
+/** Cifra del resumen, con su retraso para la entrada escalonada. */
+function Cifra({ i, icono, etiqueta, valor, total, tono }: { i: number; icono: ReactNode; etiqueta: string; valor: number; total?: number; tono?: string }) {
   return (
     <div style={{ "--i": i } as React.CSSProperties}>
-      <div
-        className={`bg-panel-2 rounded-3xl p-5 transition-[transform,box-shadow] duration-300 ease-salida hover:-translate-y-1 hover:shadow-elevada`}
-      >
-        <div className="flex items-start justify-between">
-          <p className={`text-xs font-semibold text-tenue`}>{etiqueta}</p>
-          <span className={`size-9 -mt-1 -mr-1 rounded-xl bg-black/20 text-texto grid place-items-center`}>{icono}</span>
-        </div>
-        <p className={`mt-4 text-3xl font-extrabold tabular-nums tracking-tight ${tono ?? ""}`}>
-          {valor}
-          {total !== undefined && <span className="text-base font-medium text-tenue"> / {total}</span>}
-        </p>
-      </div>
+      <CifraBase
+        etiqueta={etiqueta}
+        valor={valor}
+        total={total}
+        icono={icono}
+        tono={tono}
+        className="bg-panel-2 border-transparent transition-[transform,box-shadow] duration-300 ease-salida hover:-translate-y-1 hover:shadow-elevada"
+      />
     </div>
   );
 }
@@ -44,17 +27,38 @@ function Cifra({
 /** Teléfonos que ADB ve pero que todavía no tienen la app conectada (hay que provisionarlos). */
 function SinAgente({ dispositivos }: { dispositivos: Dispositivo[] }) {
   const [adb, setAdb] = useState<AdbDispositivo[]>([]);
+  const [error, setError] = useState<string | null>(null);
   const [instalando, setInstalando] = useState<string | null>(null);
   const avisar = useToast();
-  const cargar = () => api.adb().then(setAdb, () => setAdb([]));
+  const cargar = () =>
+    api.adb().then(
+      (a) => {
+        setAdb(a);
+        setError(null);
+      },
+      (e) => {
+        // Sin ADB en el control (`--sin-adb`) no es un error que mostrar: simplemente no hay teléfonos USB.
+        setAdb([]);
+        setError(e instanceof FalloApi && e.codigo === "sin_adb" ? null : mensajeError(e));
+      },
+    );
   useEffect(() => {
     cargar();
   }, []);
+  // Varios eventos seguidos → una sola consulta a ADB.
+  const agrupada = useAgrupar(cargar, 400);
   useEvento((e) => {
-    if (e.tipo === "adb" || e.tipo.startsWith("dispositivo_")) cargar();
+    if (e.tipo === "adb" || e.tipo.startsWith("dispositivo_")) agrupada();
   });
+  useAlReconectar(cargar);
   const conAgente = new Set(dispositivos.filter((d) => d.conectado).map((d) => d.adb_serial));
   const pendientes = adb.filter((a) => !conAgente.has(a.serial));
+  if (error)
+    return (
+      <div className="mt-8">
+        <Aviso tono="aviso">No pude leer los teléfonos USB (ADB): {error}</Aviso>
+      </div>
+    );
   if (pendientes.length === 0) return null;
 
   /** Instala y configura el agente por USB (lo mismo que scripts/provisionar). */
@@ -66,7 +70,7 @@ function SinAgente({ dispositivos }: { dispositivos: Dispositivo[] }) {
       if (r.ok) avisar("Agente instalado. En unos segundos aparece en línea.", "ok");
       else avisar(`Falló: ${fallos.map((p) => p.paso).join(", ")}${fallos[0]?.salida ? ` (${fallos[0].salida.slice(0, 80)})` : ""}`, "error");
     } catch (e) {
-      avisar(`No pude instalar: ${e instanceof Error ? e.message : String(e)}`, "error");
+      avisar(`No pude instalar: ${mensajeError(e)}`, "error");
     } finally {
       setInstalando(null);
       cargar();
@@ -125,7 +129,7 @@ function alertasDe(dispositivos: Dispositivo[]): Alerta[] {
     const poner = (clave: string, nivel: Nivel, texto: string) => out.push({ id: `${d.id}-${clave}`, nivel, dispositivo: d, texto });
     const e = d.estado;
     if (e && !e.accesibilidad_activa) poner("acc", "error", "Accesibilidad apagada: sin ella no puede leer los menús USSD en modo pantalla.");
-    if (e && e.bateria < 20 && !e.cargando) poner("bat", "aviso", `Batería al ${e.bateria}% y sin cargar.`);
+    if (e && e.bateria != null && e.bateria < 20 && !e.cargando) poner("bat", "aviso", `Batería al ${e.bateria}% y sin cargar.`);
     if (e && e.permisos_faltantes.length > 0) poner("perm", "aviso", `Faltan permisos: ${e.permisos_faltantes.join(", ")}.`);
     for (const s of simsConChip(d)) {
       const est = estadoSim(s);
@@ -173,8 +177,11 @@ function useChips(dispositivos: Dispositivo[]) {
   useEffect(() => {
     cargar();
   }, [dispositivos.length]);
+  // `dispositivo_actualizado` llega cada 30 s por teléfono y una receta emite varios eventos: se juntan.
+  const agrupada = useAgrupar(cargar, 500);
   useEvento((e) => {
-    if (e.tipo.startsWith("dispositivo_") || e.tipo === "chip_cambiado" || e.tipo === "chip_tipo" || e.tipo === "receta") cargar();
+    if (e.tipo.startsWith("dispositivo_") || e.tipo === "chip_cambiado" || e.tipo === "chip_tipo" || (e.tipo === "receta" && e.fase !== "inicio"))
+      agrupada();
   });
   const consultar = async () => {
     setConsultando(true);
@@ -183,7 +190,7 @@ function useChips(dispositivos: Dispositivo[]) {
       setChips(r);
       avisar(`Saldos actualizados (${r.filter((c) => c.saldo !== null).length}/${r.length} chips)`, "ok");
     } catch (e) {
-      avisar(`No pude consultar los saldos: ${e instanceof Error ? e.message : String(e)}`, "error");
+      avisar(`No pude consultar los saldos: ${mensajeError(e)}`, "error");
     } finally {
       setConsultando(false);
     }
@@ -192,12 +199,24 @@ function useChips(dispositivos: Dispositivo[]) {
     try {
       const c = await api.marcarTipoChip(dispositivo, slot, tipo);
       setChips((cs) => cs.map((x) => (x.dispositivo === c.dispositivo && x.slot === c.slot ? c : x)));
-      avisar(tipo === "pda" ? "Chip marcado como PDA" : "Chip marcado como normal", "ok");
+      avisar(tipo === "dealer" ? "Chip marcado como dealer" : "Chip marcado como normal", "ok");
     } catch (e) {
-      avisar(`No pude cambiar el tipo del chip: ${e instanceof Error ? e.message : String(e)}`, "error");
+      avisar(`No pude cambiar el tipo del chip: ${mensajeError(e)}`, "error");
     }
   };
-  return { chips, consultando, consultar, marcarTipo };
+  const guardarPin = async (dispositivo: string, slot: number, pin: string | null) => {
+    try {
+      const c = await api.fijarPinChip(dispositivo, slot, pin);
+      setChips((cs) => cs.map((x) => (x.dispositivo === c.dispositivo && x.slot === c.slot ? c : x)));
+      avisar(pin ? "PIN guardado para este chip" : "PIN borrado", "ok");
+      return true;
+    } catch (e) {
+      avisar(`No pude guardar el PIN: ${mensajeError(e)}`, "error");
+      return false;
+    }
+  };
+  useAlReconectar(cargar);
+  return { chips, consultando, consultar, marcarTipo, guardarPin, cargar };
 }
 
 export function Panel({
@@ -218,7 +237,32 @@ export function Panel({
   const listas = sims.filter((s) => estadoSim(s).tono === "ok").length;
   const conProblema = sims.filter((s) => ["error", "aviso"].includes(estadoSim(s).tono)).length;
   const alertas = alertasDe(dispositivos);
-  const { chips, consultando, consultar, marcarTipo } = useChips(dispositivos);
+  const { chips, consultando, consultar, marcarTipo, guardarPin, cargar: cargarChips } = useChips(dispositivos);
+  const [reconectando, setReconectando] = useState(false);
+  const avisar = useToast();
+
+  /** Tras dormir el PC: reabre los eventos, rehace el túnel USB, despierta la app de los caídos y relee todo. */
+  const reconectarTodo = async () => {
+    setReconectando(true);
+    bus.reconectar();
+    try {
+      const r = await api.reconectar();
+      const despertadas = r.adb.filter((a) => a.app_abierta).length;
+      const sinTunel = r.adb.filter((a) => !a.reverse_ok).length;
+      const partes = [`${r.refrescados.length} al día`];
+      if (despertadas) partes.push(`${despertadas} app${despertadas > 1 ? "s" : ""} despertada${despertadas > 1 ? "s" : ""} (aparece en unos segundos)`);
+      if (r.ocupados.length) partes.push(`${r.ocupados.length} ocupado${r.ocupados.length > 1 ? "s" : ""} (no se tocó)`);
+      if (r.sin_respuesta.length) partes.push(`${r.sin_respuesta.length} sin respuesta: se reinició su conexión`);
+      if (sinTunel) partes.push(`${sinTunel} sin túnel USB: revisa el cable`);
+      avisar(`Reconectar: ${partes.join(" · ")}`, r.sin_respuesta.length || sinTunel ? "error" : "ok");
+    } catch (e) {
+      avisar(`No pude reconectar: ${mensajeError(e)}`, "error");
+    } finally {
+      setReconectando(false);
+      recargar();
+      cargarChips();
+    }
+  };
 
   return (
     <div>
@@ -227,8 +271,14 @@ export function Panel({
         sub="Cada teléfono corre la app agente y se conecta al control por USB."
         acciones={
           <>
-            <Boton variante="fantasma" icono={<RefreshCw className="size-4" />} onClick={recargar}>
-              Actualizar
+            <Boton
+              variante="fantasma"
+              icono={<RefreshCw className="size-4" />}
+              cargando={reconectando}
+              onClick={reconectarTodo}
+              title="Rehace el túnel USB, despierta la app de los teléfonos desconectados y actualiza el estado de todos. Úsalo si el PC se durmió."
+            >
+              {reconectando ? "Reconectando…" : "Reconectar"}
             </Boton>
             <Boton variante="primario" icono={<Wallet className="size-4" />} cargando={consultando} disabled={chips.length === 0} onClick={consultar}>
               {consultando ? "Consultando…" : "Consultar saldos"}
@@ -278,6 +328,7 @@ export function Panel({
               onUssd={(slot) => abrir(d.id, slot, "ussd")}
               onSms={() => abrir(d.id, 0, "sms")}
               onTipo={(slot, tipo) => marcarTipo(d.id, slot, tipo)}
+              onPin={(slot, pin) => guardarPin(d.id, slot, pin)}
             />
           ))}
         </div>

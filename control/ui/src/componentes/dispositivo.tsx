@@ -1,6 +1,7 @@
 import { BatteryCharging, BatteryLow, BatteryMedium, BatteryFull, Cable, Eye, EyeOff, Hash, MessageSquare, Smartphone } from "./iconos";
 import type { ChipInfo, Dispositivo, Sim, TipoChip } from "../api/tipos";
 import { etiquetaOperador, hace, nombreSim } from "../util/datos";
+import { useState } from "react";
 import { Insignia, Punto, Tarjeta, cx } from "./base";
 
 /** Ranuras con chip puesto. Algunos teléfonos informan ranuras vacías (p. ej. la eSIM) que no interesan. */
@@ -32,6 +33,7 @@ export function ChipSim({
   onUssd,
   onSms,
   onTipo,
+  onPin,
 }: {
   sim: Sim;
   compacto?: boolean;
@@ -39,10 +41,20 @@ export function ChipSim({
   chip?: ChipInfo;
   onUssd?: () => void;
   onSms?: () => void;
-  /** Cambia el tipo del chip (normal ↔ PDA). */
+  /** Cambia el tipo del chip (normal ↔ dealer). */
   onTipo?: (tipo: TipoChip) => void;
+  /** Guarda el PIN del chip (`null` lo borra). Devuelve si se guardó. */
+  onPin?: (pin: string | null) => Promise<boolean>;
 }) {
   const e = estadoSim(sim);
+  const [editandoPin, setEditandoPin] = useState(false);
+  const [pin, setPin] = useState("");
+  const guardarPin = async (valor: string | null) => {
+    if (onPin && (await onPin(valor))) {
+      setEditandoPin(false);
+      setPin("");
+    }
+  };
   const accion =
     "inline-flex items-center gap-1.5 h-7 px-2.5 rounded-full bg-black/25 text-xs font-medium text-tenue transition-colors hover:text-texto hover:bg-black/40";
   return (
@@ -51,7 +63,8 @@ export function ChipSim({
         <div className="flex items-center gap-2 min-w-0">
           <span className="text-[11px] font-semibold text-tenue">{nombreSim(sim.slot)}</span>
           <span className="font-medium truncate">{etiquetaOperador(sim)}</span>
-          {chip?.tipo === "pda" && <Insignia tono="info">PDA</Insignia>}
+          {chip?.tipo === "dealer" && <Insignia tono="info">Dealer</Insignia>}
+          {chip?.tipo === "dealer" && chip.tiene_pin && <Insignia tono="ok">PIN</Insignia>}
         </div>
         <Insignia tono={e.tono}>{e.texto}</Insignia>
       </div>
@@ -65,6 +78,18 @@ export function ChipSim({
             <div className="text-right shrink-0 leading-tight">
               <p className="text-sm font-semibold tabular-nums">{chip.saldo === null ? "—" : `${chip.saldo.toFixed(2)} Bs`}</p>
               <p className="text-[11px] text-tenue">{chip.sin_verificar ? "sin verificar" : chip.saldo_ms ? hace(chip.saldo_ms) : "sin consultar"}</p>
+              {chip.tipo === "dealer" && (
+                <p
+                  className="mt-1 text-[11px] text-tenue"
+                  title={chip.saldo_dealer_ms ? `Saldo dealer consultado ${hace(chip.saldo_dealer_ms)}` : "Se consulta con «Consultar saldos» si el chip tiene PIN guardado"}
+                >
+                  Dealer{" "}
+                  <span className="text-sm font-semibold text-texto tabular-nums">
+                    {chip.saldo_dealer == null ? "—" : `${chip.saldo_dealer.toFixed(2)} Bs`}
+                  </span>
+                  {chip.saldo_dealer == null && !chip.tiene_pin && " · sin PIN"}
+                </p>
+              )}
             </div>
           )}
         </div>
@@ -99,27 +124,80 @@ export function ChipSim({
             <button
               type="button"
               className={cx(accion, "ml-auto")}
-              title={chip.tipo === "pda" ? "Volver a tratarlo como chip normal" : "Marcar como chip PDA (usa recetas PDA si existen)"}
+              title={chip.tipo === "dealer" ? "Volver a tratarlo como chip normal" : "Marcar como chip dealer (usa recetas dealer si existen)"}
               onClick={(ev) => {
                 ev.stopPropagation();
-                onTipo(chip.tipo === "pda" ? "normal" : "pda");
+                const dealer = chip.tipo !== "dealer";
+                onTipo(dealer ? "dealer" : "normal");
+                // Las recargas dealer de Tigo piden el PIN del dealer: se ofrece guardarlo al marcar.
+                if (dealer && onPin && chip.operador === "TIGO" && !chip.tiene_pin) setEditandoPin(true);
               }}
             >
-              {chip.tipo === "pda" ? "Quitar PDA" : "Marcar PDA"}
+              {chip.tipo === "dealer" ? "Quitar dealer" : "Marcar dealer"}
+            </button>
+          )}
+          {onPin && chip?.tipo === "dealer" && !editandoPin && (
+            <button
+              type="button"
+              className={accion}
+              title="PIN del chip dealer, para las recetas dealer que lo piden"
+              onClick={(ev) => {
+                ev.stopPropagation();
+                setEditandoPin(true);
+              }}
+            >
+              {chip.tiene_pin ? "Cambiar PIN" : "Guardar PIN"}
             </button>
           )}
         </div>
+      )}
+      {editandoPin && onPin && (
+        <form
+          className="mt-2.5 flex items-center gap-1.5"
+          onClick={(ev) => ev.stopPropagation()}
+          onSubmit={(ev) => {
+            ev.preventDefault();
+            if (/^\d{4,8}$/.test(pin)) guardarPin(pin);
+          }}
+        >
+          <input
+            type="password"
+            inputMode="numeric"
+            autoComplete="off"
+            autoFocus
+            placeholder="PIN del dealer"
+            value={pin}
+            onChange={(ev) => setPin(ev.target.value.replace(/\D/g, "").slice(0, 8))}
+            className="h-7 w-32 rounded-full bg-black/25 px-3 text-xs font-mono outline-none focus:ring-2 focus:ring-acento/40"
+          />
+          <button type="submit" disabled={!/^\d{4,8}$/.test(pin)} className={cx(accion, "disabled:opacity-40")}>
+            Guardar
+          </button>
+          {chip?.tiene_pin && (
+            <button type="button" className={accion} onClick={() => guardarPin(null)}>
+              Borrar
+            </button>
+          )}
+          <button type="button" className={cx(accion, "ml-auto")} onClick={() => setEditandoPin(false)}>
+            Omitir
+          </button>
+        </form>
       )}
     </div>
   );
 }
 
-function Bateria({ nivel, cargando }: { nivel: number; cargando: boolean }) {
-  const Icono = cargando ? BatteryCharging : nivel < 20 ? BatteryLow : nivel < 70 ? BatteryMedium : BatteryFull;
+/** `nivel` null: Android no la informa. */
+function Bateria({ nivel, cargando }: { nivel: number | null; cargando: boolean }) {
+  const baja = nivel != null && nivel < 20 && !cargando;
+  const Icono = cargando ? BatteryCharging : nivel == null ? BatteryMedium : nivel < 20 ? BatteryLow : nivel < 70 ? BatteryMedium : BatteryFull;
   return (
-    <span className={cx("inline-flex items-center gap-1 text-xs", nivel < 20 && !cargando ? "text-error" : "text-tenue")}>
+    <span
+      className={cx("inline-flex items-center gap-1 text-xs", baja ? "text-error" : "text-tenue")}
+      title={nivel == null ? "El teléfono no informa la batería" : `Batería ${nivel}%${cargando ? ", cargando" : ""}`}
+    >
       <Icono className="size-4" />
-      {nivel}%
+      {nivel == null ? "—" : `${nivel}%`}
     </span>
   );
 }
@@ -133,12 +211,14 @@ export function TarjetaDispositivo({
   onUssd,
   onSms,
   onTipo,
+  onPin,
 }: {
   i?: number;
   chips?: ChipInfo[];
   onUssd?: (slot: number) => void;
   onSms?: () => void;
   onTipo?: (slot: number, tipo: TipoChip) => void;
+  onPin?: (slot: number, pin: string | null) => Promise<boolean>;
   d: Dispositivo;
   seleccionado?: boolean;
   onClick?: () => void;
@@ -195,6 +275,7 @@ export function TarjetaDispositivo({
                 onUssd={d.conectado && onUssd ? () => onUssd(s.slot) : undefined}
                 onSms={d.conectado ? onSms : undefined}
                 onTipo={d.conectado && onTipo ? (tipo) => onTipo(s.slot, tipo) : undefined}
+                onPin={d.conectado && onPin ? (pin) => onPin(s.slot, pin) : undefined}
               />
             ))
           )}

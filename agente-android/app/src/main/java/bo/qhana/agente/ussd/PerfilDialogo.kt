@@ -16,18 +16,32 @@ data class PerfilDialogo(
         val TEXTOS_POSITIVO = listOf("send", "enviar", "responder", "reply", "ok", "aceptar", "responder")
         val TEXTOS_NEGATIVO = listOf("cancel", "cancelar", "dismiss", "descartar", "cerrar", "close")
 
-        /** Ventana "ejecutando código USSD…": se ignora, no es la respuesta. */
+        /**
+         * Ventana "ejecutando código USSD…" del sistema: se ignora, no es la respuesta. Solo textos del sistema y al
+         * principio de la ventana: un texto del operador como "Enviando tu recarga…" es una respuesta, no progreso.
+         */
         val PROGRESO = Regex(
-            "(running ussd|ussd code running|ejecutando c[oó]digo|c[oó]digo ussd en ejecuci|ejecutando ussd|sending|enviando)",
+            "^\\s*(ussd code running|mmi code running|running (ussd|mmi)( code)?|" +
+                "ejecutando (el )?c[oó]digo|c[oó]digo (ussd|mmi) en ejecuci[oó]n|ejecutando (ussd|mmi)|" +
+                "sending (ussd|mmi)|enviando (solicitud |el c[oó]digo )?(ussd|mmi))",
             RegexOption.IGNORE_CASE,
         )
 
-        /** Mensajes del sistema cuando el operador rechaza o corta: se reportan como error `red`. */
+        /**
+         * Mensajes del sistema (no del operador) cuando la red rechaza o corta la sesión: se reportan como error `red`.
+         * Un texto del operador como "No se pudo realizar la recarga" vuelve como texto: lo juzga la receta (`error_si`).
+         */
         val ERROR_RED = Regex(
-            "(connection problem|invalid mmi|problema de conexi|c[oó]digo mmi no v|mmi no v[aá]lido|unknown application|" +
-                "error de red|network error|no se pudo|unable to process)",
+            "(connection problem|invalid mmi|mmi code (is )?invalid|problema de conexi[oó]n|error de conexi[oó]n|" +
+                "c[oó]digo mmi (no v[aá]lido|inv[aá]lido)|mmi no v[aá]lido|unknown application|" +
+                "fixed dialing numbers|n[uú]meros de marcaci[oó]n fija)",
             RegexOption.IGNORE_CASE,
         )
+
+        /** Los textos de progreso del sistema son cortos; uno largo es del operador. */
+        fun esProgreso(texto: String): Boolean = texto.length <= 80 && PROGRESO.containsMatchIn(texto)
+
+        fun esErrorRed(texto: String): Boolean = ERROR_RED.containsMatchIn(texto)
 
         /** AOSP y derivados (Infinix/XOS observado 2026-10-29). */
         val AOSP = PerfilDialogo(

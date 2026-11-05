@@ -45,7 +45,7 @@ struct Activo {
 }
 
 enum Sonda {
-    Nuevo { puerto: String, canal: CanalModem, sim: Sim },
+    Nuevo { puerto: String, canal: Box<CanalModem>, sim: Sim },
     /// Otro puerto de un módem que ya tenemos.
     Duplicado { puerto: String },
     Falla { puerto: String, motivo: String },
@@ -111,6 +111,7 @@ async fn tick(
         for s in sondas {
             match s {
                 Sonda::Nuevo { puerto, canal, sim } => {
+                    let canal = *canal;
                     let imei = canal.identidad.imei.clone();
                     let hola = Hola {
                         protocolo: protocolo::PROTOCOLO,
@@ -222,7 +223,7 @@ fn sondear(puertos: Vec<String>, mut conocidos: HashSet<String>) -> Vec<Sonda> {
             continue;
         }
         match modem.leer_sim() {
-            Ok(sim) => out.push(Sonda::Nuevo { puerto, canal: CanalModem::nuevo(modem, id), sim }),
+            Ok(sim) => out.push(Sonda::Nuevo { puerto, canal: Box::new(CanalModem::nuevo(modem, id)), sim }),
             Err(e) => {
                 conocidos.remove(&id.imei);
                 out.push(falla(e.detalle));

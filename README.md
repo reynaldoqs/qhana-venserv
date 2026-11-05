@@ -79,6 +79,5 @@ Probado de punta a punta con un **Infinix X678B (Android 14) con dos chips Tigo*
 - Probar en Windows: compilar el control, `provisionar.ps1`, correrlo como servicio.
 - Probar un lote real (pequeño) con el teléfono. La validación y la consulta de saldos ya se probaron con él.
 - Lectura de SMS con un SMS real; ICCID (requiere modo "dueño del dispositivo").
-- Token en la API cuando se use por Wi-Fi.
 - Empaquetar la interfaz con Tauri.
 - IA (ver el análisis): detectar cambios de menú del operador y proponer recetas.

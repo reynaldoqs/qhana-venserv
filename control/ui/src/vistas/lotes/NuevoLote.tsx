@@ -1,12 +1,35 @@
-import { useMemo, useRef, useState } from "react";
-import { ArrowLeft, Download, FileSpreadsheet, FlaskConical, Play, RotateCw, Upload } from "../../componentes/iconos";
-import { api, FalloApi } from "../../api/cliente";
-import type { Dispositivo, FilaValidada, Validacion } from "../../api/tipos";
-import { Aviso, Boton, Campo, Interruptor, Tarjeta, Titulo, cx } from "../../componentes/base";
-import { hace } from "../../util/datos";
-import { EstadoValidacion, bs, nombreChip } from "./comunes";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Download, FileSpreadsheet, FlaskConical, Play, RotateCw, Smartphone, Upload } from "../../componentes/iconos";
+import { api, esCancelado, FalloApi, mensajeError } from "../../api/cliente";
+import type { Dispositivo, OrigenChipsPedido, Validacion } from "../../api/tipos";
+import { Aviso, Boton, BotonDescarga, Campo, Cifra, Dialogo, Interruptor, Migas, Tarjeta, Titulo, cx } from "../../componentes/base";
+import { sinPrefijo, useRecetas, useRetrasado } from "../../util/datos";
+import { bs, describirOrigen } from "./comunes";
+import { dejarAviso } from "./detalle/useLote";
+import { claveChip, useChipsEnLinea } from "./nuevo/chips";
+import { armarPlan, PlanLote } from "./nuevo/PlanLote";
+import { TablaValidacion } from "./nuevo/TablaValidacion";
+import { ElegirChips, ElegirTipo, InventarioDealer, TIPOS, ejemploCsv, type TipoLote } from "./nuevo/TiposLote";
 
-type Filtro = "todas" | "errores" | "avisos" | "validas";
+/**
+ * Borrador del lote nuevo, fuera de React: la app remonta la vista al cambiar de pestaña y así lo validado
+ * (tipo, chips, CSV, nombre…) sigue ahí al volver. Se vacía al crear el lote.
+ */
+const borrador = new Map<string, unknown>();
+
+function useBorrador<T>(clave: string, inicial: T): [T, (v: T | ((x: T) => T)) => void] {
+  const [v, setV] = useState<T>(() => (borrador.has(clave) ? (borrador.get(clave) as T) : inicial));
+  const fijar = useCallback(
+    (x: T | ((ant: T) => T)) => {
+      const ant = (borrador.has(clave) ? borrador.get(clave) : inicial) as T;
+      const nuevo = typeof x === "function" ? (x as (a: T) => T)(ant) : x;
+      borrador.set(clave, nuevo);
+      setV(nuevo);
+    },
+    [clave], // eslint-disable-line react-hooks/exhaustive-deps
+  );
+  return [v, fijar];
+}
 
 function nombrePorDefecto(archivo: string | null) {
   const base = archivo?.replace(/\.(csv|txt)$/i, "") ?? "Lote";
@@ -14,138 +37,18 @@ function nombrePorDefecto(archivo: string | null) {
   return `${base} · ${hoy}`;
 }
 
-function Cifra({ etiqueta, valor, sub, tono }: { etiqueta: string; valor: React.ReactNode; sub?: React.ReactNode; tono?: string }) {
+/** Cabecera numerada de cada paso del formulario. */
+function Paso({ n, titulo, extra, children }: { n: number; titulo: string; extra?: ReactNode; children: ReactNode }) {
   return (
-    <Tarjeta className="px-4 py-3.5">
-      <p className="text-xs font-medium text-tenue">{etiqueta}</p>
-      <p className={cx("mt-1 text-2xl font-semibold tabular-nums tracking-tight", tono)}>{valor}</p>
-      {sub && <p className="text-xs text-tenue mt-0.5">{sub}</p>}
-    </Tarjeta>
-  );
-}
-
-/** Barra "tengo X de lo que necesito". */
-function Medidor({ etiqueta, tiene, necesita, formato }: { etiqueta: string; tiene: number; necesita: number; formato: (n: number) => string }) {
-  const ok = tiene >= necesita;
-  const pct = necesita > 0 ? Math.min(100, (tiene / necesita) * 100) : 100;
-  return (
-    <div>
-      <div className="flex justify-between text-xs mb-1.5">
-        <span className="text-tenue">{etiqueta}</span>
-        <span className={cx("font-medium tabular-nums", ok ? "text-ok" : "text-aviso")}>
-          {formato(tiene)} / {formato(necesita)}
-        </span>
+    <Tarjeta className="p-4 sm:p-5 mb-4">
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 mb-3.5">
+        <h2 className="flex items-center gap-2.5 font-semibold">
+          <span className="size-6 rounded-full bg-panel-2 text-xs font-bold grid place-items-center tabular-nums">{n}</span>
+          {titulo}
+        </h2>
+        {extra}
       </div>
-      <div className="h-1.5 rounded-full bg-panel-2 overflow-hidden">
-        <div className={cx("h-full rounded-full", ok ? "bg-ok" : "bg-aviso")} style={{ width: `${pct}%` }} />
-      </div>
-    </div>
-  );
-}
-
-function TablaFilas({ filas, dispositivos }: { filas: FilaValidada[]; dispositivos: Dispositivo[] }) {
-  const [filtro, setFiltro] = useState<Filtro>(() => (filas.some((f) => f.estado === "invalida") ? "errores" : "todas"));
-  const vistas = useMemo(
-    () => ({
-      todas: filas,
-      errores: filas.filter((f) => f.estado === "invalida"),
-      avisos: filas.filter((f) => f.estado === "aviso" || f.sin_capacidad > 0),
-      validas: filas.filter((f) => f.estado !== "invalida"),
-    }),
-    [filas],
-  );
-  const lista = vistas[filtro];
-  const etiquetas: [Filtro, string][] = [
-    ["todas", "Todas"],
-    ["errores", "Con errores"],
-    ["avisos", "Avisos"],
-    ["validas", "Válidas"],
-  ];
-  return (
-    <Tarjeta className="overflow-hidden">
-      <div className="flex gap-1 p-2 border-b border-borde">
-        {etiquetas.map(([id, t]) => (
-          <button
-            key={id}
-            onClick={() => setFiltro(id)}
-            className={cx(
-              "h-8 px-3 rounded-xl text-sm font-medium inline-flex items-center gap-2",
-              filtro === id ? "bg-panel-2 text-texto" : "text-tenue hover:text-texto",
-            )}
-          >
-            {t}
-            <span className="text-xs tabular-nums opacity-70">{vistas[id].length}</span>
-          </button>
-        ))}
-      </div>
-      <div className="overflow-x-auto max-h-[520px] overflow-y-auto">
-        <table className="w-full text-sm">
-          <thead className="sticky top-0 bg-panel z-10">
-            <tr className="text-left text-xs text-tenue border-b border-borde">
-              <th className="font-medium px-4 py-2.5 w-14">Fila</th>
-              <th className="font-medium px-3 py-2.5">Número</th>
-              <th className="font-medium px-3 py-2.5">Operador</th>
-              <th className="font-medium px-3 py-2.5 text-right">Monto</th>
-              <th className="font-medium px-3 py-2.5">Envíos</th>
-              <th className="font-medium px-3 py-2.5">Sale de</th>
-              <th className="font-medium px-3 py-2.5">Estado</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-borde">
-            {lista.length === 0 && (
-              <tr>
-                <td colSpan={7} className="px-4 py-10 text-center text-tenue">
-                  Nada en esta vista
-                </td>
-              </tr>
-            )}
-            {lista.map((f) => (
-              <tr key={f.fila} className={cx(f.estado === "invalida" && "bg-error-suave/40")}>
-                <td className="px-4 py-2.5 text-tenue tabular-nums align-top">{f.fila}</td>
-                <td className="px-3 py-2.5 font-mono align-top">
-                  {f.numero ?? <span className="text-error">{f.original.numero || "(vacío)"}</span>}
-                  {f.referencia && <div className="text-xs text-tenue font-sans">{f.referencia}</div>}
-                </td>
-                <td className="px-3 py-2.5 align-top">{f.operador ?? <span className="text-error">{f.original.operador || "(vacío)"}</span>}</td>
-                <td className="px-3 py-2.5 text-right tabular-nums align-top">
-                  {f.monto != null ? bs(f.monto) : <span className="text-error">{f.original.monto || "(vacío)"}</span>}
-                </td>
-                <td className="px-3 py-2.5 align-top">
-                  <div className="flex flex-wrap gap-1">
-                    {f.envios.map((m, i) => (
-                      <span key={i} className="h-5.5 px-1.5 rounded-md bg-panel-2 text-xs font-mono tabular-nums inline-flex items-center">
-                        {m}
-                      </span>
-                    ))}
-                  </div>
-                </td>
-                <td className="px-3 py-2.5 align-top text-xs font-mono text-tenue">
-                  {[...new Set(f.plan.map((p) => nombreChip(dispositivos, p.dispositivo, p.slot)))].join(", ")}
-                  {f.sin_capacidad > 0 && (
-                    <div className="text-aviso font-sans">
-                      {f.sin_capacidad} envío{f.sin_capacidad > 1 ? "s" : ""} para mañana
-                      {f.motivo_sin_capacidad && <span className="text-tenue"> · {f.motivo_sin_capacidad}</span>}
-                    </div>
-                  )}
-                </td>
-                <td className="px-3 py-2.5 align-top">
-                  <EstadoValidacion estado={f.estado} />
-                  {f.errores.map((e, i) => (
-                    <div key={i} className="text-xs text-error mt-1 max-w-64">
-                      {e}
-                    </div>
-                  ))}
-                  {f.avisos.map((e, i) => (
-                    <div key={i} className="text-xs text-aviso mt-1 max-w-64">
-                      {e}
-                    </div>
-                  ))}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      {children}
     </Tarjeta>
   );
 }
@@ -159,36 +62,84 @@ export function NuevoLote({
   volver: () => void;
   abrirLote: (id: number) => void;
 }) {
-  const [csv, setCsv] = useState<string | null>(null);
-  const [archivo, setArchivo] = useState<string | null>(null);
-  const [pegar, setPegar] = useState(false);
-  const [texto, setTexto] = useState("");
-  const [consultarSaldos, setConsultarSaldos] = useState(true);
-  const [validando, setValidando] = useState(false);
-  const [v, setV] = useState<Validacion | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [nombre, setNombre] = useState("");
-  const [simular, setSimular] = useState(true);
-  const [confirmando, setConfirmando] = useState(false);
+  const [tipo, setTipo] = useBorrador<TipoLote | null>("tipo", null);
+  const [accion, setAccion] = useBorrador("accion", "recargar");
+  const [seleccion, setSeleccion] = useBorrador<string[]>("seleccion", []);
+  const [csv, setCsv] = useBorrador<string | null>("csv", null);
+  const [archivo, setArchivo] = useBorrador<string | null>("archivo", null);
+  const [pegar, setPegar] = useBorrador("pegar", false);
+  const [texto, setTexto] = useBorrador("texto", "");
+  const [consultarSaldos, setConsultarSaldos] = useBorrador("consultarSaldos", true);
+  const [validando, setValidando] = useBorrador("validando", false);
+  const [v, setV] = useBorrador<Validacion | null>("v", null);
+  const [error, setError] = useBorrador<string | null>("error", null);
+  const [nombre, setNombre] = useBorrador("nombre", "");
+  const [simular, setSimular] = useBorrador("simular", true);
   const [creando, setCreando] = useState(false);
   const [arrastrando, setArrastrando] = useState(false);
+  /** Diálogo abierto: confirmar un lote real, o avisar que es igual a otro reciente (`detalle` del 409). */
+  const [dialogo, setDialogo] = useState<{ tipo: "real" } | { tipo: "duplicado"; detalle: string } | null>(null);
   const input = useRef<HTMLInputElement>(null);
+  const { chips, error: errorChips, cargado: chipsCargados } = useChipsEnLinea();
+  const { lista: recetas } = useRecetas();
+
+  // Solo los chips elegidos que siguen en línea.
+  const elegidos = useMemo(() => {
+    const enLinea = new Set(chips.map((c) => claveChip(c.dispositivo, c.slot)));
+    return chipsCargados ? seleccion.filter((k) => enLinea.has(k)) : seleccion;
+  }, [chips, chipsCargados, seleccion]);
+  const operadoresElegidos = new Set(chips.filter((c) => elegidos.includes(claveChip(c.dispositivo, c.slot))).map((c) => c.operador));
+  const origen: OrigenChipsPedido | null =
+    tipo === "chips"
+      ? {
+          chips: [...elegidos].sort().map((k) => {
+            const i = k.lastIndexOf("|");
+            return { dispositivo: k.slice(0, i), slot: Number(k.slice(i + 1)) };
+          }),
+          accion,
+        }
+      : null;
+
+  // Cambiar los chips o la acción invalida lo validado: se vuelve a validar (sin apuro, por si se marcan varios).
+  const clave = tipo === "chips" ? `chips|${accion}|${[...elegidos].sort().join(",")}` : "operador";
+  const claveQuieta = useRetrasado(clave, 700);
+  const claveValidada = useRef(borrador.has("clave") ? (borrador.get("clave") as string) : clave);
+  const turno = useRef(0);
+  /** La validación en vuelo: una nueva la corta (si no, varias consultas de saldo seguidas ocupan las conexiones). */
+  const enVuelo = useRef<AbortController | null>(null);
+  useEffect(() => () => enVuelo.current?.abort(), []);
+  useEffect(() => {
+    if (csv && tipo && claveQuieta === clave && claveValidada.current !== clave) validar(csv, archivo);
+  }, [claveQuieta]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function validar(contenido: string, nombreArchivo: string | null) {
+    const mio = ++turno.current;
     setCsv(contenido);
     setArchivo(nombreArchivo);
     setNombre((n) => n || nombrePorDefecto(nombreArchivo));
-    setValidando(true);
     setError(null);
-    setConfirmando(false);
+    claveValidada.current = clave;
+    borrador.set("clave", clave);
+    if (tipo === "chips" && (!origen || origen.chips.length === 0)) {
+      enVuelo.current?.abort();
+      setValidando(false);
+      setV(null);
+      setError("Elige al menos un chip");
+      return;
+    }
+    setValidando(true);
+    enVuelo.current?.abort();
+    const ctl = new AbortController();
+    enVuelo.current = ctl;
     try {
-      setV(await api.validarLote(contenido, consultarSaldos));
+      const r = await api.validarLote(contenido, consultarSaldos, origen, ctl.signal);
+      if (mio === turno.current) setV(r);
     } catch (e) {
-      const f = e as FalloApi;
-      setError(`${f.codigo}: ${f.message}`);
+      if (mio !== turno.current || esCancelado(e)) return;
+      setError(mensajeError(e));
       setV(null);
     } finally {
-      setValidando(false);
+      if (mio === turno.current) setValidando(false);
     }
   }
 
@@ -201,137 +152,209 @@ export function NuevoLote({
     validar(await f.text(), f.name);
   }
 
-  async function crear() {
+  /** Simulación: se crea y arranca directo. Real: primero el diálogo de confirmación. */
+  function pedirCrear() {
     if (!csv || !v) return;
-    if (!simular && !confirmando) {
-      setConfirmando(true);
+    if (simular) crear(false);
+    else setDialogo({ tipo: "real" });
+  }
+
+  /**
+   * Crea y arranca. Crear y arrancar son dos pasos: si el lote se creó, siempre se abre (aunque `iniciar` falle,
+   * el error se muestra allá) y nunca se vuelve a crear. Un `409 duplicado` ofrece crearlo igual (`forzar`).
+   */
+  async function crear(forzar: boolean) {
+    if (!csv || !v) return;
+    setDialogo(null);
+    setCreando(true);
+    let id: number;
+    try {
+      id = (await api.crearLote(nombre.trim() || nombrePorDefecto(archivo), csv, simular, origen, forzar)).id;
+    } catch (e) {
+      setCreando(false);
+      if (e instanceof FalloApi && e.codigo === "duplicado") setDialogo({ tipo: "duplicado", detalle: e.message });
+      else setError(mensajeError(e));
       return;
     }
-    setCreando(true);
+    borrador.clear();
     try {
-      const lote = await api.crearLote(nombre.trim() || nombrePorDefecto(archivo), csv, simular);
-      await api.iniciarLote(lote.id);
-      abrirLote(lote.id);
+      await api.iniciarLote(id);
     } catch (e) {
-      const f = e as FalloApi;
-      setError(`${f.codigo}: ${f.message}`);
-    } finally {
-      setCreando(false);
-      setConfirmando(false);
+      dejarAviso(id, `El lote se creó, pero no arrancó: ${mensajeError(e)}. Revísalo y pulsa Iniciar.`);
     }
+    setCreando(false);
+    abrirLote(id);
   }
 
   const r = v?.resumen;
   const ejecutables = r ? r.validas : 0; // `validas` ya incluye las filas con avisos
+  const plan = useMemo(() => (v ? armarPlan(v) : null), [v]);
+  const info = TIPOS.find((t) => t.id === tipo);
+  const variosOperadores = operadoresElegidos.size > 1;
+  const columnas =
+    tipo === "chips"
+      ? variosOperadores
+        ? "numero, monto, operador (y opcional referencia)"
+        : "numero, monto (y opcionales operador, referencia)"
+      : tipo === "recargas"
+        ? "numero, monto, operador, accion = recargar (y opcional referencia)"
+        : "numero, monto, operador (y opcionales accion, referencia)";
+  const filasValidas = v?.filas.filter((f) => f.estado !== "invalida") ?? [];
+  // Red de seguridad: "Recargas" con un CSV sin la columna accion haría transferencias.
+  const recargasSinAccion = tipo === "recargas" && filasValidas.length > 0 && filasValidas.every((f) => f.accion === "transferir");
+  const recargasEnTransferencias = tipo === "transferencias" ? filasValidas.filter((f) => f.accion !== "transferir").length : 0;
+  const avisosLote = [...(r?.avisos ?? [])];
+  const pasoCsv = tipo === "chips" ? 3 : 2;
 
   return (
-    <div className="pb-28">
+    <div>
       <Titulo
+        migas={<Migas tramos={[{ texto: "Lotes", ir: volver }, { texto: "Nuevo" }]} />}
         titulo="Nuevo lote"
-        sub="Sube un CSV. Se valida todo antes de ejecutar: formato, operador, montos, cupo de los chips y saldo."
-        acciones={
-          <>
-            <a href={api.urlPlantilla} download>
-              <Boton variante="fantasma" icono={<Download className="size-4" />}>
-                Plantilla CSV
-              </Boton>
-            </a>
-            <Boton variante="fantasma" icono={<ArrowLeft className="size-4" />} onClick={volver}>
-              Lotes
-            </Boton>
-          </>
-        }
+        sub="Elige el tipo, sube el CSV y revisa el plan. Nada se envía hasta que lo confirmes."
       />
 
-      {/* Carga */}
-      <Tarjeta className="p-4 mb-5">
-        {pegar ? (
-          <div className="space-y-3">
-            <textarea
-              value={texto}
-              onChange={(e) => setTexto(e.target.value)}
-              placeholder={"numero,monto,operador,referencia\n69869869,12,TIGO,Pedido 1001"}
-              className="w-full h-40 rounded-xl border border-borde bg-panel px-3 py-2 font-mono text-sm outline-none focus:border-acento focus:ring-3 focus:ring-acento/15"
+      <Paso n={1} titulo="Qué vas a enviar">
+        <ElegirTipo tipo={tipo} onCambio={setTipo} />
+        {tipo === "recargas" && <InventarioDealer chips={chips} recetas={recetas} cargado={chipsCargados} />}
+      </Paso>
+
+      {tipo === "chips" && (
+        <Paso n={2} titulo="Chips que hacen los envíos">
+          <ElegirChips
+            dispositivos={dispositivos}
+            chips={chips}
+            recetas={recetas}
+            error={errorChips}
+            accion={accion}
+            onAccion={setAccion}
+            seleccion={elegidos}
+            onSeleccion={setSeleccion}
+          />
+        </Paso>
+      )}
+
+      {tipo && info && (
+        <Paso
+          n={pasoCsv}
+          titulo="El CSV"
+          extra={
+            <BotonDescarga
+              variante="fantasma"
+              className="h-8 px-3 text-xs -my-1"
+              descargar={() => api.descargarPlantilla(tipo)}
+              icono={<Download className="size-4" />}
+            >
+              Plantilla CSV
+            </BotonDescarga>
+          }
+        >
+          {pegar ? (
+            <div className="space-y-3">
+              <textarea
+                aria-label="Contenido del CSV"
+                aria-describedby="csv-ayuda"
+                value={texto}
+                onChange={(e) => setTexto(e.target.value)}
+                placeholder={ejemploCsv(tipo, variosOperadores)}
+                spellCheck={false}
+                className="w-full h-40 rounded-xl border border-borde bg-panel px-3 py-2 font-mono text-sm outline-none placeholder:text-tenue/60 focus:border-acento focus:ring-3 focus:ring-acento/15"
+              />
+              <p id="csv-ayuda" className="text-xs text-tenue">
+                Columnas: {columnas}. <b className="text-texto font-semibold">Montos en Bs</b>: 0.50, 5, 12.30.
+              </p>
+              <div className="flex gap-2">
+                <Boton variante="primario" disabled={!texto.trim()} cargando={validando} onClick={() => validar(texto, null)}>
+                  Validar
+                </Boton>
+                <Boton variante="fantasma" onClick={() => setPegar(false)}>
+                  Subir archivo
+                </Boton>
+              </div>
+            </div>
+          ) : (
+            <>
+              <input
+                ref={input}
+                id="archivo-csv"
+                type="file"
+                accept=".csv,.txt,text/csv"
+                className="sr-only"
+                tabIndex={-1}
+                aria-hidden
+                onChange={(e) => {
+                  leer(e.target.files?.[0]);
+                  e.target.value = "";
+                }}
+              />
+              <button
+                type="button"
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setArrastrando(true);
+                }}
+                onDragLeave={() => setArrastrando(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setArrastrando(false);
+                  leer(e.dataTransfer.files[0]);
+                }}
+                onClick={() => input.current?.click()}
+                disabled={validando}
+                aria-describedby="archivo-csv-ayuda"
+                className={cx(
+                  "w-full flex flex-col items-center justify-center text-center rounded-xl border-2 border-dashed py-9 px-5 cursor-pointer transition-colors disabled:cursor-progress",
+                  arrastrando ? "border-texto/60 bg-panel-2" : "border-borde hover:border-tenue/60 hover:bg-panel-2",
+                )}
+              >
+                <span className="size-11 rounded-xl bg-panel-2 text-tenue grid place-items-center mb-3">
+                  {validando ? <RotateCw className="size-5 animate-spin" /> : <Upload className="size-5" />}
+                </span>
+                {validando ? (
+                  <span className="font-medium" role="status">
+                    {consultarSaldos ? "Validando y consultando saldos…" : "Validando…"}
+                  </span>
+                ) : archivo ? (
+                  <span className="font-medium inline-flex items-center gap-2 break-all">
+                    <FileSpreadsheet className="size-4 text-tenue shrink-0" />
+                    {archivo} <span className="text-tenue font-normal whitespace-nowrap">· elegir otro</span>
+                  </span>
+                ) : (
+                  <span className="font-medium">Arrastra el CSV aquí o elige un archivo</span>
+                )}
+                <span id="archivo-csv-ayuda" className="text-sm text-tenue mt-1">
+                  Columnas: {columnas}.
+                  <br />
+                  Montos en Bs: <span className="font-mono">0.50</span>, <span className="font-mono">5</span>, <span className="font-mono">12.30</span>.
+                </span>
+              </button>
+            </>
+          )}
+          <div className="flex flex-wrap items-center justify-between gap-3 mt-3">
+            <Interruptor
+              activo={consultarSaldos}
+              onCambio={setConsultarSaldos}
+              etiqueta={
+                <span className="text-left">
+                  Consultar saldos al validar <span className="text-tenue">(~3.5 s por chip, gratis)</span>
+                </span>
+              }
             />
             <div className="flex gap-2">
-              <Boton variante="primario" disabled={!texto.trim()} cargando={validando} onClick={() => validar(texto, null)}>
-                Validar
-              </Boton>
-              <Boton variante="fantasma" onClick={() => setPegar(false)}>
-                Subir archivo
-              </Boton>
+              {!pegar && (
+                <Boton variante="fantasma" onClick={() => setPegar(true)}>
+                  Pegar texto
+                </Boton>
+              )}
+              {csv && (
+                <Boton variante="secundario" icono={<RotateCw className="size-4" />} cargando={validando} onClick={() => validar(csv, archivo)}>
+                  Validar de nuevo
+                </Boton>
+              )}
             </div>
           </div>
-        ) : (
-          <div
-            onDragOver={(e) => {
-              e.preventDefault();
-              setArrastrando(true);
-            }}
-            onDragLeave={() => setArrastrando(false)}
-            onDrop={(e) => {
-              e.preventDefault();
-              setArrastrando(false);
-              leer(e.dataTransfer.files[0]);
-            }}
-            onClick={() => input.current?.click()}
-            className={cx(
-              "flex flex-col items-center justify-center text-center rounded-xl border-2 border-dashed py-10 px-6 cursor-pointer transition-colors",
-              arrastrando ? "border-texto/60 bg-panel-2" : "border-borde hover:border-tenue/60 hover:bg-panel-2",
-            )}
-          >
-            <input
-              ref={input}
-              type="file"
-              accept=".csv,.txt,text/csv"
-              className="hidden"
-              onChange={(e) => {
-                leer(e.target.files?.[0]);
-                e.target.value = "";
-              }}
-            />
-            <div className="size-11 rounded-xl bg-panel-2 text-tenue grid place-items-center mb-3">
-              {validando ? <RotateCw className="size-5 animate-spin" /> : <Upload className="size-5" />}
-            </div>
-            {validando ? (
-              <p className="font-medium">{consultarSaldos ? "Validando y consultando saldos…" : "Validando…"}</p>
-            ) : archivo ? (
-              <p className="font-medium inline-flex items-center gap-2">
-                <FileSpreadsheet className="size-4 text-tenue" />
-                {archivo} <span className="text-tenue font-normal">· clic para cambiar</span>
-              </p>
-            ) : (
-              <>
-                <p className="font-medium">Arrastra el CSV aquí o haz clic para elegirlo</p>
-                <p className="text-sm text-tenue mt-1">Columnas: numero, monto, operador (y opcionales accion, referencia)</p>
-              </>
-            )}
-          </div>
-        )}
-        <div className="flex flex-wrap items-center justify-between gap-3 mt-3">
-          <Interruptor
-            activo={consultarSaldos}
-            onCambio={setConsultarSaldos}
-            etiqueta={
-              <span>
-                Consultar saldos al validar <span className="text-tenue">(~3.5 s por chip, gratis)</span>
-              </span>
-            }
-          />
-          <div className="flex gap-2">
-            {!pegar && (
-              <Boton variante="fantasma" onClick={() => setPegar(true)}>
-                Pegar texto
-              </Boton>
-            )}
-            {csv && (
-              <Boton variante="secundario" icono={<RotateCw className="size-4" />} cargando={validando} onClick={() => validar(csv, archivo)}>
-                Validar de nuevo
-              </Boton>
-            )}
-          </div>
-        </div>
-      </Tarjeta>
+        </Paso>
+      )}
 
       {error && (
         <div className="mb-5">
@@ -339,19 +362,44 @@ export function NuevoLote({
         </div>
       )}
 
-      {v && r && (
-        <div className="space-y-5 aparecer">
+      {v && r && plan && tipo && (
+        <div className={cx("space-y-5 aparecer transition-opacity duration-200", validando && "opacity-60")}>
+          {recargasSinAccion && (
+            <Aviso tono="error" titulo="Este CSV no dice «recargar»">
+              Sin la columna <span className="font-mono">accion</span> (o con ella vacía) cada fila es una <b>transferencia</b>. Para recargas, pon{" "}
+              <span className="font-mono">recargar</span> en la columna <span className="font-mono">accion</span> (mira la plantilla), o elige el tipo
+              «Transferencias» si eso es lo que quieres.
+            </Aviso>
+          )}
+          {recargasEnTransferencias > 0 && (
+            <Aviso tono="info" titulo={`${recargasEnTransferencias} fila${recargasEnTransferencias === 1 ? "" : "s"} con otra acción`}>
+              La columna <span className="font-mono">accion</span> pide algo distinto de transferir en esas filas (p. ej. recargar): van a los chips
+              que tengan esa receta.
+            </Aviso>
+          )}
+          {v.avisos_origen && v.avisos_origen.length > 0 && (
+            <Aviso tono="aviso" titulo={v.avisos_origen.length === 1 ? "Un chip quedó fuera" : `${v.avisos_origen.length} chips quedaron fuera`}>
+              <ul className={v.avisos_origen.length > 1 ? "list-disc pl-4 space-y-0.5" : undefined}>
+                {v.avisos_origen.map((x, i) => (
+                  <li key={i}>{x}</li>
+                ))}
+              </ul>
+              <p className="mt-1 text-xs opacity-80">El lote se reparte entre los demás chips elegidos.</p>
+            </Aviso>
+          )}
+          {avisosLote.length > 0 && (
+            <Aviso tono="aviso" titulo={avisosLote.length === 1 ? "Aviso del lote" : "Avisos del lote"}>
+              <ul className={avisosLote.length > 1 ? "list-disc pl-4 space-y-0.5" : undefined}>
+                {avisosLote.map((x, i) => (
+                  <li key={i}>{x}</li>
+                ))}
+              </ul>
+              <p className="mt-1 text-xs opacity-80">No impiden crear el lote. Simular primero lo deja probado.</p>
+            </Aviso>
+          )}
+
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            <Cifra
-              etiqueta="Filas que se ejecutarán"
-              valor={
-                <>
-                  {ejecutables}
-                  <span className="text-base font-normal text-tenue"> / {r.filas}</span>
-                </>
-              }
-              sub={r.con_avisos ? `${r.con_avisos} con avisos` : "sin avisos"}
-            />
+            <Cifra etiqueta="Filas que se ejecutarán" valor={ejecutables} total={r.filas} sub={r.con_avisos ? `${r.con_avisos} con avisos` : "sin avisos"} />
             <Cifra
               etiqueta="Filas con error"
               valor={r.invalidas}
@@ -360,117 +408,141 @@ export function NuevoLote({
             />
             <Cifra etiqueta="Total a enviar" valor={bs(r.total_bs)} sub={`${r.envios} envíos · comisión ${bs(r.comision_total)}`} />
             <Cifra
-              etiqueta="Entra hoy"
-              valor={
-                <>
-                  {r.planificados}
-                  <span className="text-base font-normal text-tenue"> / {r.envios} envíos</span>
-                </>
-              }
+              etiqueta="Entra hoy (envíos)"
+              valor={r.planificados}
+              total={r.envios}
               tono={r.sin_capacidad ? "text-aviso" : "text-ok"}
               sub={r.sin_capacidad ? `${r.sin_capacidad} quedan para mañana` : "hay capacidad para todo"}
             />
           </div>
 
-          {r.operadores.length > 0 && (
-            <div className="grid gap-3 md:grid-cols-2">
-              {r.operadores.map((o) => (
-                <Tarjeta key={o.operador} className="p-4 space-y-3.5">
-                  <div className="flex items-center justify-between">
-                    <p className="font-semibold">{o.operador}</p>
-                    <p className="text-xs text-tenue">
-                      {o.chips} chip{o.chips === 1 ? "" : "s"} en línea · {o.envios} envíos
-                    </p>
-                  </div>
-                  <Medidor etiqueta="Cupo de hoy (envíos)" tiene={o.cupo_hoy} necesita={o.envios} formato={(n) => String(n)} />
-                  <Medidor etiqueta="Saldo conocido" tiene={o.saldo_conocido} necesita={o.necesario_bs} formato={(n) => bs(n)} />
-                  {o.saldo_desconocido_chips > 0 && (
-                    <p className="text-xs text-aviso">
-                      {o.saldo_desconocido_chips} chip{o.saldo_desconocido_chips > 1 ? "s" : ""} sin saldo conocido: activa "Consultar saldos".
-                    </p>
-                  )}
-                  {o.chips === 0 && <p className="text-xs text-error">No hay chips de {o.operador} en línea.</p>}
-                </Tarjeta>
-              ))}
-            </div>
-          )}
+          <PlanLote plan={plan} dispositivos={dispositivos} />
 
-          {v.chips.length > 0 && (
-            <Tarjeta className="overflow-hidden">
-              <p className="px-4 pt-3.5 pb-2 text-sm font-semibold">Chips disponibles</p>
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="text-left text-xs text-tenue border-y border-borde">
-                      <th className="font-medium px-4 py-2">Chip</th>
-                      <th className="font-medium px-3 py-2">Operador</th>
-                      <th className="font-medium px-3 py-2 text-right">Saldo</th>
-                      <th className="font-medium px-3 py-2">Consultado</th>
-                      <th className="font-medium px-3 py-2 text-right">Envíos hoy</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-borde">
-                    {v.chips.map((c) => (
-                      <tr key={`${c.dispositivo}-${c.slot}`}>
-                        <td className="px-4 py-2 font-mono">{nombreChip(dispositivos, c.dispositivo, c.slot)}</td>
-                        <td className="px-3 py-2">{c.operador}</td>
-                        <td className="px-3 py-2 text-right tabular-nums">{bs(c.saldo)}</td>
-                        <td className="px-3 py-2 text-tenue">{c.saldo_ms ? hace(c.saldo_ms) : "nunca"}</td>
-                        <td className="px-3 py-2 text-right tabular-nums">
-                          {c.agotado_hoy ? (
-                            <span className="text-aviso">agotado por el operador</span>
-                          ) : (
-                            <>
-                              {c.enviados_hoy} <span className="text-tenue">/ {c.enviados_hoy + c.cupo_hoy}</span>
-                            </>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </Tarjeta>
-          )}
-
-          <TablaFilas filas={v.filas} dispositivos={dispositivos} />
+          <TablaValidacion filas={v.filas} dispositivos={dispositivos} />
         </div>
       )}
 
-      {/* Barra de acción fija */}
-      {v && r && (
-        <div className="fixed bottom-0 left-0 md:left-60 right-0 border-t border-borde bg-panel/95 backdrop-blur z-20">
-          <div className="max-w-6xl mx-auto px-4 md:px-8 py-3 flex flex-wrap items-center gap-3">
-            <div className="w-64">
-              <Campo value={nombre} onChange={(e) => setNombre(e.target.value)} placeholder="Nombre del lote" />
+      {/* Barra de acción: pegada abajo dentro de la columna (sobre la navegación del móvil). */}
+      {v && r && tipo && (
+        <div className="sticky z-30 bottom-[calc(4rem+env(safe-area-inset-bottom))] md:bottom-4 mt-6">
+          <div className="rounded-3xl border border-borde bg-panel/95 backdrop-blur shadow-elevada px-4 py-3 flex flex-wrap items-end gap-x-4 gap-y-3">
+            <div className="w-full sm:w-64">
+              <Campo etiqueta="Nombre del lote" value={nombre} onChange={(e) => setNombre(e.target.value)} placeholder={nombrePorDefecto(archivo)} className="h-9" />
             </div>
-            <Interruptor
-              activo={simular}
-              onCambio={(x) => {
-                setSimular(x);
-                setConfirmando(false);
-              }}
-              etiqueta={<span>Simulación</span>}
-            />
-            <div className="ml-auto flex items-center gap-3">
+            <div className="h-9 flex items-center">
+              <Interruptor activo={simular} onCambio={setSimular} etiqueta={<span>Simulación</span>} />
+            </div>
+            <div className="ml-auto flex flex-wrap items-center justify-end gap-3">
               {!simular && (
                 <span className="text-sm text-aviso">
                   Real: {bs(r.total_bs)} en {r.envios} envíos + {bs(r.comision_total)} de comisión
                 </span>
               )}
               <Boton
-                variante={!simular && confirmando ? "peligro" : "primario"}
-                disabled={ejecutables === 0}
+                variante="primario"
+                disabled={ejecutables === 0 || validando || recargasSinAccion}
                 cargando={creando}
-                onClick={crear}
+                onClick={pedirCrear}
                 icono={simular ? <FlaskConical className="size-4" /> : <Play className="size-4" />}
               >
-                {simular ? `Simular ${ejecutables} filas` : confirmando ? "Confirmar: ejecutar real" : `Ejecutar ${ejecutables} filas`}
+                {simular ? `Simular ${ejecutables} filas` : `Ejecutar ${ejecutables} filas…`}
               </Boton>
             </div>
           </div>
         </div>
       )}
+
+      {v && r && plan && (
+        <Dialogo
+          abierto={dialogo?.tipo === "real"}
+          cerrar={() => setDialogo(null)}
+          peligro
+          titulo="Ejecutar el lote real"
+          acciones={
+            <>
+              <Boton variante="fantasma" data-autofocus onClick={() => setDialogo(null)}>
+                Volver
+              </Boton>
+              <Boton variante="peligro" icono={<Play className="size-4" />} onClick={() => crear(false)}>
+                Enviar {bs(r.total_bs)}
+              </Boton>
+            </>
+          }
+        >
+          <p>
+            Esto <b>mueve dinero de verdad</b> y no se puede deshacer. Revisa el resumen:
+          </p>
+          <dl className="mt-4 grid grid-cols-2 gap-x-6 gap-y-2.5 rounded-2xl bg-panel-2 px-4 py-3.5">
+            <dt className="text-tenue">Total a enviar</dt>
+            <dd className="text-right font-semibold tabular-nums">{bs(r.total_bs)}</dd>
+            <dt className="text-tenue">Comisión</dt>
+            <dd className="text-right tabular-nums">{bs(r.comision_total)}</dd>
+            <dt className="text-tenue">Envíos</dt>
+            <dd className="text-right tabular-nums">
+              {r.envios}
+              {r.sin_capacidad > 0 && <span className="text-aviso"> ({r.sin_capacidad} para mañana)</span>}
+            </dd>
+            <dt className="text-tenue">Filas</dt>
+            <dd className="text-right tabular-nums">
+              {ejecutables}
+              {r.invalidas > 0 && <span className="text-tenue"> ({r.invalidas} omitidas)</span>}
+            </dd>
+            {v.origen && (
+              <>
+                <dt className="text-tenue">Origen</dt>
+                <dd className="text-right">{describirOrigen(v.origen, dispositivos)}</dd>
+              </>
+            )}
+          </dl>
+          <div className="mt-3 rounded-2xl border border-borde/70 px-4 py-3">
+            <p className="text-xs font-semibold text-tenue mb-2 inline-flex items-center gap-1.5">
+              <Smartphone className="size-3.5" />
+              {plan.telefonos === 1 ? "1 teléfono, en serie" : `${plan.telefonos} teléfonos trabajarán en paralelo`}
+            </p>
+            <ul className="space-y-1.5">
+              {plan.operadores
+                .filter((o) => o.envios > 0)
+                .map((o) => (
+                  <li key={o.operador} className="flex gap-3 text-sm">
+                    <b className="font-semibold w-16 shrink-0">{o.operador}</b>
+                    <span className="text-tenue min-w-0">
+                      {o.chips
+                        .filter((c) => c.envios > 0)
+                        .map((c) => `${sinPrefijo(c.numero) ?? `SIM ${c.slot + 1}`}${c.dealer ? " (dealer)" : ""}: ${c.envios} envío${c.envios === 1 ? "" : "s"}`)
+                        .join(", ")}
+                    </span>
+                  </li>
+                ))}
+            </ul>
+          </div>
+          <p className="mt-3 text-tenue">
+            «{nombre.trim() || nombrePorDefecto(archivo)}». Al iniciar se consultan los saldos de los chips y se guardan para verificar después.
+          </p>
+        </Dialogo>
+      )}
+
+      <Dialogo
+        abierto={dialogo?.tipo === "duplicado"}
+        cerrar={() => setDialogo(null)}
+        peligro
+        titulo="Ya hay un lote igual"
+        acciones={
+          <>
+            <Boton variante="fantasma" data-autofocus onClick={() => setDialogo(null)}>
+              No crear
+            </Boton>
+            <Boton variante="peligro" onClick={() => crear(true)}>
+              Crear igual
+            </Boton>
+          </>
+        }
+      >
+        <p>{dialogo?.tipo === "duplicado" ? dialogo.detalle : ""}</p>
+        <p className="mt-2 text-tenue">
+          Es el mismo CSV que un lote real de las últimas 24 h. Si lo creas igual, esos números pueden recibir dos veces. Revisa primero ese lote en
+          la lista.
+        </p>
+      </Dialogo>
     </div>
   );
 }

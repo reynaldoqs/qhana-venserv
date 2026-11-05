@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { CornerDownLeft, Hash, PhoneCall, X, Smartphone } from "../componentes/iconos";
-import { api, FalloApi } from "../api/cliente";
+import { BookOpen, CornerDownLeft, Hash, PhoneCall, X, Smartphone } from "../componentes/iconos";
+import { api, mensajeError } from "../api/cliente";
 import type { Dispositivo, ModoUssd } from "../api/tipos";
-import { Boton, Campo, Insignia, Selector, Tarjeta, Titulo, Vacio, cx } from "../componentes/base";
+import { Boton, Campo, Insignia, Segmentado, Selector, Tarjeta, Titulo, Vacio, cx } from "../componentes/base";
 import { ChipSim, simsConChip } from "../componentes/dispositivo";
-import { hora, nombreSim, opcionesMenu, segundos } from "../util/datos";
+import { etiquetaTelefono, hora, nombreSim, operadorDe, opcionesMenu, segundos } from "../util/datos";
+import { DialogoDesdeSesion, type PasoSesion } from "./recetas/DesdeSesion";
 
 type Mensaje =
   | { id: number; de: "yo"; texto: string; ts: number }
@@ -32,6 +33,9 @@ export function ConsolaUssd({
   const [mensajes, setMensajes] = useState<Mensaje[]>([]);
   const [sesion, setSesion] = useState<{ id: string; disp: string } | null>(null);
   const [ocupado, setOcupado] = useState(false);
+  // La sesión grabada (solo en memoria) para "Guardar como receta": el código y cada respuesta con su pantalla.
+  const [grabacion, setGrabacion] = useState<PasoSesion[]>([]);
+  const [comoReceta, setComoReceta] = useState(false);
   const fin = useRef<HTMLDivElement>(null);
   const entrada = useRef<HTMLInputElement>(null);
 
@@ -63,11 +67,10 @@ export function ConsolaUssd({
   const agregar = (m: Mensaje) => setMensajes((l) => [...l, m]);
 
   const fallo = (e: unknown) => {
-    const f = e as FalloApi;
     agregar({
       id: nuevoId(),
       de: "sistema",
-      texto: f.codigo ? `${f.codigo}: ${f.message}` : String(e),
+      texto: mensajeError(e),
       ts: Date.now(),
       tono: "error",
     });
@@ -79,9 +82,11 @@ export function ConsolaUssd({
     if (sesion) await cancelar(true);
     setOcupado(true);
     agregar({ id: nuevoId(), de: "yo", texto: codigo.trim(), ts: Date.now() });
+    setGrabacion([]);
     try {
       const r = await api.ussdIniciar(disp.id, slot, codigo.trim(), modo);
       agregar({ id: nuevoId(), de: "red", texto: r.texto, ts: Date.now(), ms: r.ms, abierta: r.abierta });
+      setGrabacion([{ enviado: codigo.trim(), texto: r.texto }]);
       setSesion(r.abierta ? { id: r.sesion, disp: disp.id } : null);
       if (r.abierta) setTimeout(() => entrada.current?.focus(), 50);
     } catch (e) {
@@ -99,6 +104,7 @@ export function ConsolaUssd({
     try {
       const r = await api.ussdResponder(sesion.disp, sesion.id, texto.trim());
       agregar({ id: nuevoId(), de: "red", texto: r.texto, ts: Date.now(), ms: r.ms, abierta: r.abierta });
+      setGrabacion((g) => (g.length ? [...g, { enviado: texto.trim(), texto: r.texto }] : g));
       if (!r.abierta) setSesion(null);
       else setTimeout(() => entrada.current?.focus(), 50);
     } catch (e) {
@@ -146,7 +152,7 @@ export function ConsolaUssd({
           <Selector etiqueta="Teléfono" value={dispId} onChange={(e) => setDispId(e.target.value)} disabled={!!sesion}>
             {conectados.map((d) => (
               <option key={d.id} value={d.id}>
-                {d.modelo} · {d.adb_serial?.slice(-6) ?? d.id.slice(0, 6)}
+                {etiquetaTelefono(d)}
               </option>
             ))}
           </Selector>
@@ -173,27 +179,18 @@ export function ConsolaUssd({
           )}
 
           <div>
-            <span className="block text-xs font-medium text-tenue mb-1.5">Modo</span>
-            <div className="grid grid-cols-2 gap-1 p-1 rounded-xl bg-panel-2 text-sm">
-              {(
-                [
-                  ["pantalla", "Menús"],
-                  ["api", "Un paso"],
-                ] as const
-              ).map(([m, t]) => (
-                <button
-                  key={m}
-                  disabled={!!sesion}
-                  onClick={() => setModo(m)}
-                  className={cx(
-                    "h-8 rounded-md font-medium transition-colors",
-                    modo === m ? "bg-panel shadow-sm" : "text-tenue hover:text-texto",
-                  )}
-                >
-                  {t}
-                </button>
-              ))}
-            </div>
+            <span id="modo-ussd" className="block text-xs font-medium text-tenue mb-1.5">Modo</span>
+            <Segmentado
+              etiqueta="Modo"
+              valor={modo}
+              onCambio={setModo}
+              deshabilitado={!!sesion}
+              className="w-full grid grid-cols-2"
+              opciones={[
+                { id: "pantalla", texto: "Menús" },
+                { id: "api", texto: "Un paso" },
+              ]}
+            />
             <p className="mt-1.5 text-xs text-tenue">
               {modo === "pantalla"
                 ? "Lee la ventana del teléfono: permite contestar menús."
@@ -242,7 +239,7 @@ export function ConsolaUssd({
 
         {/* Conversación */}
         <Tarjeta className="flex flex-col min-h-[460px] overflow-hidden">
-          <div className="flex items-center justify-between px-4 h-12 border-b border-borde">
+          <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2 min-h-12 border-b border-borde">
             <div className="flex items-center gap-2 text-sm">
               <Hash className="size-4 text-tenue" />
               <span className="font-medium">{disp?.modelo}</span>
@@ -250,8 +247,21 @@ export function ConsolaUssd({
             </div>
             <div className="flex items-center gap-2">
               {sesion ? <Insignia tono="info">Sesión abierta</Insignia> : <Insignia>Sin sesión</Insignia>}
+              {grabacion.length > 0 && (
+                <Boton variante="fantasma" className="h-7 px-2" icono={<BookOpen className="size-4" />} onClick={() => setComoReceta(true)} title="Armar una receta con esta sesión">
+                  <span className="hidden sm:inline">Guardar como receta</span>
+                  <span className="sm:hidden">Receta</span>
+                </Boton>
+              )}
               {mensajes.length > 0 && !sesion && (
-                <Boton variante="fantasma" className="h-7 px-2" onClick={() => setMensajes([])}>
+                <Boton
+                  variante="fantasma"
+                  className="h-7 px-2"
+                  onClick={() => {
+                    setMensajes([]);
+                    setGrabacion([]);
+                  }}
+                >
                   Limpiar
                 </Boton>
               )}
@@ -352,6 +362,15 @@ export function ConsolaUssd({
           )}
         </Tarjeta>
       </div>
+      <DialogoDesdeSesion
+        abierto={comoReceta}
+        cerrar={() => setComoReceta(false)}
+        pasos={grabacion}
+        operadorInicial={(() => {
+          const s = disp?.sims.find((x) => x.slot === slot);
+          return s ? operadorDe(s) : "";
+        })()}
+      />
     </div>
   );
 }

@@ -33,45 +33,26 @@ pub fn numero(s: &str) -> String {
     n
 }
 
-/// `12`, `12.00`, `12,00`, `Bs 12`, `12 Bs` → 12. Error si tiene centavos o no es un número positivo.
-pub fn monto(s: &str) -> Result<u64, String> {
-    let original = s.trim();
-    if original.is_empty() {
-        return Err("falta el monto".into());
-    }
-    let mut t = original.to_lowercase();
-    for quitar in ["bob", "bs.", "bs", "$"] {
-        t = t.replace(quitar, "");
-    }
-    let t: String = t.chars().filter(|c| !c.is_whitespace()).collect();
-    // Separador decimal: el último de '.' o ','; el otro (si hay) es de miles.
-    let (entera, decimal) = match (t.rfind('.'), t.rfind(',')) {
-        (Some(p), Some(c)) => {
-            let d = p.max(c);
-            let miles = if d == p { ',' } else { '.' };
-            (t[..d].replace(miles, ""), t[d + 1..].to_string())
-        }
-        (Some(d), None) | (None, Some(d)) => {
-            // "1.000" / "1,000" puede ser mil o uno: no se adivina (un error aquí mueve dinero de más).
-            let frac = &t[d + 1..];
-            if frac.len() == 3 {
-                return Err(format!("monto ambiguo '{original}': escribe solo el entero (por ejemplo 1000 o 1)"));
-            }
-            (t[..d].to_string(), frac.to_string())
-        }
-        (None, None) => (t.clone(), String::new()),
-    };
-    if entera.is_empty() || !entera.chars().all(|c| c.is_ascii_digit()) || !decimal.chars().all(|c| c.is_ascii_digit()) {
-        return Err(format!("monto inválido '{original}'"));
-    }
-    if decimal.chars().any(|c| c != '0') {
-        return Err(format!("monto con centavos '{original}': solo se aceptan montos enteros en Bs"));
-    }
-    let v: u64 = entera.parse().map_err(|_| format!("monto inválido '{original}'"))?;
-    if v == 0 {
-        return Err("el monto debe ser mayor que 0".into());
-    }
-    Ok(v)
+/// `12`, `12.00`, `12,00`, `Bs 12`, `12 Bs` → 12; `1.50`, `1,5`, `.50` → 1.5 / 0.5. Hasta 2 decimales. Error si no
+/// es un número positivo. Que la receta acepte centavos se revisa aparte. Se lee en centavos enteros
+/// ([`nucleo::monto::centavos`]): el f64 que sale es exacto al centavo.
+pub fn monto(s: &str) -> Result<f64, String> {
+    nucleo::monto::centavos(s).map(|c| c as f64 / 100.0)
+}
+
+/// Bs como texto para una receta y para mostrar: `5`, `1.50`.
+pub fn bs(m: f64) -> String {
+    nucleo::monto::texto(nucleo::monto::de_bs(m))
+}
+
+pub fn es_entero(m: f64) -> bool {
+    (m - m.round()).abs() < 1e-9
+}
+
+/// Redondea a centavos.
+pub fn centavos(m: f64) -> f64 {
+    // `+ 0.0`: una suma vacía de f64 da -0.0, que saldría como "-0.0" en el JSON.
+    (m * 100.0).round() / 100.0 + 0.0
 }
 
 /// `tigo` → `TIGO`, `Nuevatel` → `VIVA`. Error si no es un operador conocido.
@@ -135,19 +116,26 @@ mod tests {
 
     #[test]
     fn montos() {
-        assert_eq!(monto("12"), Ok(12));
-        assert_eq!(monto("12.00"), Ok(12));
-        assert_eq!(monto("12,00"), Ok(12));
-        assert_eq!(monto("Bs 12"), Ok(12));
-        assert_eq!(monto("12 Bs"), Ok(12));
-        assert_eq!(monto("Bs. 1.000,00"), Ok(1000));
+        assert_eq!(monto("12"), Ok(12.0));
+        assert_eq!(monto("12.00"), Ok(12.0));
+        assert_eq!(monto("12,00"), Ok(12.0));
+        assert_eq!(monto("Bs 12"), Ok(12.0));
+        assert_eq!(monto("12 Bs"), Ok(12.0));
+        assert_eq!(monto("Bs. 1.000,00"), Ok(1000.0));
         assert!(monto("1,000").unwrap_err().contains("ambiguo"));
         assert!(monto("1.000").unwrap_err().contains("ambiguo"));
-        assert!(monto("12,50").unwrap_err().contains("centavos"));
+        assert_eq!(monto("12,50"), Ok(12.5));
+        assert_eq!(monto("1.5"), Ok(1.5));
+        assert!(monto("0.00").is_err());
+        assert_eq!(bs(1.5), "1.50");
+        assert_eq!(bs(5.0), "5");
         assert!(monto("doce").unwrap_err().contains("inválido"));
         assert!(monto("0").is_err());
         assert!(monto("-5").is_err());
         assert!(monto("").unwrap_err().contains("falta"));
+        assert_eq!(monto(".50"), Ok(0.5));
+        assert_eq!(monto("Bs. 0,50"), Ok(0.5));
+        assert_eq!(bs(0.5), "0.50");
     }
 
     #[test]

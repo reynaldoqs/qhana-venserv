@@ -24,10 +24,33 @@ puerto **47800**) y obedece el protocolo de [`docs/protocolo.md`](../docs/protoc
   la ventana de USSD del sistema, escribe la respuesta (`ACTION_SET_TEXT`) y presiona Enviar/Cancelar por
   id. Sesiones de varios pasos. **Nunca usa coordenadas.**
 - **USSD modo `api`**: `TelephonyManager.sendUssdRequest`. Un solo paso. **No sirve con Tigo** (ver abajo).
-- **SMS**: avisa cada SMS entrante (`sms_recibido`) y lista la bandeja (`sms_listar`).
+- **SMS**: avisa cada SMS entrante (`sms_recibido`) y lista la bandeja (`sms_listar`). Los entrantes van a una cola
+  guardada en disco (`files/sms_pendientes.json`, máx. 500): un SMS sale de la cola solo cuando se envió, y lo pendiente
+  se envía al reconectar, aunque Android haya matado el proceso entre medio.
 - **SIMs y estado**: ranuras, operador, número, estado del chip y de voz, red; batería, pantalla,
   accesibilidad y permisos faltantes cada 30 s.
-- Corre como servicio en primer plano, arranca con el teléfono y se reconecta solo (1, 2, 4… 30 s).
+- Corre como servicio en primer plano, arranca con el teléfono y se reconecta solo (1, 2, 4… 30 s, ±25 % al azar para
+  que varios teléfonos no vuelvan todos a la vez). Antes de reconectar (también la reconexión forzada) cierra la sesión
+  USSD abierta.
+
+### Salvaguardas antes de marcar o escribir (ver `docs/protocolo.md`)
+
+- `codigo` debe cumplir `^[*#][0-9*#]+#$`; si no, `error parametro` sin marcar (una orden rota no termina en llamada).
+- Sin la cuenta telefónica (`PhoneAccountHandle`) del chip del `slot`: `error sim_invalida`, nunca marca por la SIM por defecto.
+- `ussd_responder` solo escribe si la ventana visible es la de la sesión (mismo texto que el último devuelto, comparado
+  sin importar espacios/saltos de línea ni la forma Unicode). Si es otra: `error red` "la ventana cambió", sin escribir.
+  Tras escribir relee el campo; si no tiene el texto pedido, `error red` sin presionar Enviar.
+- El registro visible nunca muestra lo enviado: `ussd_responder` anota solo el largo y los códigos van enmascarados
+  (`*133*••••••••*•••#`).
+- Plazo total por petición = `timeout_ms`: incluye el enfriamiento de la API, encender la pantalla y limpiar ventanas
+  viejas. Si se acaba antes de marcar o enviar, responde `timeout` sin marcar/enviar; la limpieza posterior se corta a
+  los 3 s del plazo (el control espera `timeout_ms` + 5 s). Una ventana vieja que no se puede cerrar da `ocupado` sin marcar.
+- Un `req` repetido (de las últimas 20 peticiones) no se vuelve a ejecutar: se reenvía la respuesta guardada.
+- Un mensaje que el agente no entiende (tipo desconocido o campos inválidos) pero trae `req` se contesta `error parametro`.
+- Los textos del sistema se reconocen por frases fijas: progreso ("USSD code running", "Ejecutando código USSD…") al
+  comienzo de la ventana, y error `red` solo con "Connection problem / invalid MMI", "Problema de conexión o código MMI
+  no válido" y similares. Un texto del operador como "Enviando tu recarga…" o "No se pudo realizar la recarga" vuelve
+  como respuesta normal y lo juzga la receta (`error_si`). Tests: `app/src/test/.../PerfilDialogoTest.kt`.
 - **No hace falta tener la app abierta.** Lo mantienen vivo `AgenteService` (primer plano, `START_STICKY`) y el servicio de
   accesibilidad, que al reconectarse también arranca el agente. Para ver por qué murió el proceso:
   `adb shell dumpsys activity exit-info bo.qhana.agente` (en las pruebas todos los cierres eran `PACKAGE UPDATED`, por reinstalar).
@@ -38,8 +61,9 @@ Requisitos: JDK 17 y Android SDK (platform 34). `local.properties` con `sdk.dir`
 
 ```bash
 cd agente-android
-./gradlew :protocolo:test :app:assembleDebug
+./gradlew :protocolo:test :app:testDebugUnitTest :app:assembleDebug
 # APK: app/build/outputs/apk/debug/app-debug.apk
+# Tests de JVM: protocolo/src/test (mensajes) y app/src/test (reglas puras: código USSD, textos de ventana, URL, req repetido)
 ```
 
 ## Provisionar un teléfono (USB)
@@ -57,13 +81,19 @@ Windows: `.\scripts\provisionar.ps1 -Serial <serial> [-Url …] [-Token …] [-A
 Qué hace el script: instala el APK, concede permisos (`CALL_PHONE`, `READ_PHONE_STATE`, `READ_PHONE_NUMBERS`,
 `RECEIVE_SMS`, `READ_SMS`, `POST_NOTIFICATIONS`), **agrega** el servicio de accesibilidad a los ya activos,
 deja la pantalla encendida mientras haya USB (`svc power stayon usb`) (por defecto; `PANTALLA=auto` es el modo experimental en que el agente la enciende solo al usar USSD), saca la app de la optimización de
-batería, hace `adb reverse` si la URL es local y lanza la app con `--es url … --es token … --es adb_serial …`.
+batería, hace `adb reverse` si la URL es local y configura la app con `--es url … --es token … --es adb_serial …`.
 
 Cambiar la URL o el token sin tocar el teléfono:
 
 ```bash
-adb -s <serial> shell am start -n bo.qhana.agente/.ui.MainActivity --es url ws://… --es token …
+adb -s <serial> shell am start -n bo.qhana.agente/.ui.ActividadConfig --es url ws://… --es token …
+adb -s <serial> shell am start -n bo.qhana.agente/.ui.ActividadConfig --ez reconectar true   # reconectar ya
 ```
+
+La configuración entra **solo** por `.ui.ActividadConfig` (sin interfaz: aplica y abre la pantalla principal). Está
+protegida con el permiso `android.permission.DUMP`, que tiene `adb shell` y no las apps comunes: ninguna otra app del
+teléfono puede apuntar el agente a otro servidor. `.ui.MainActivity` ignora esos extras. Una `url` que no sea `ws://`
+o `wss://` se ignora (también en el campo de la pantalla) y queda la anterior.
 
 ## Pasar a Wi-Fi
 
@@ -81,10 +111,13 @@ agente-android/
 │   ├── ussd/        MotorUssd (interfaz), UssdApi, UssdPantalla, ServicioAccesibilidad,
 │   │                PerfilDialogo (ids de la ventana por fabricante), GestorUssd (1 sesión, 60 s, enfriamiento)
 │   ├── telefonia/   SIMs, slot ↔ sub_id, PhoneAccount para marcar por un chip concreto
-│   ├── sms/         ReceptorSms (entrantes), LectorSms (bandeja), BusSms (cola hasta reconectar)
-│   ├── servicio/    AgenteService (une todo), Despachador (petición → módulo → respuesta), EstadoDispositivo, arranque
-│   ├── config/      Ajustes (url, token, adb_serial)
-│   └── ui/          MainActivity: estado, SIMs, registro; editar URL/token
+│   │                ReglasUssd (código válido, enmascarar, comparar textos de ventana: puro, con tests)
+│   ├── sms/         ReceptorSms (entrantes), LectorSms (bandeja), BusSms (cola en disco hasta enviarse)
+│   ├── servicio/    AgenteService (une todo), Despachador (petición → módulo → respuesta), MemoriaRespuestas
+│   │                (req repetido), EstadoDispositivo, arranque
+│   ├── config/      Ajustes (url, token, adb_serial), UrlControl (valida ws:// / wss://)
+│   └── ui/          MainActivity: estado, SIMs, sesión USSD (con Cancelar), registro; editar URL/token
+│                    ActividadConfig: configuración por ADB (protegida con DUMP)
 └── scripts/     provisionar.sh, provisionar.ps1
 ```
 
@@ -136,6 +169,15 @@ La SIM correcta se usa siempre: slot 0 → línea 78815232, slot 1 → 69759675 
   reemplazar la conexión anterior del mismo `dispositivo_id`.
 - **SMS entrante** (`sms_recibido`): implementado pero no probado con un SMS real todavía.
 - **El slot 2 vacío** aparece porque el Infinix reporta 3 módems (2 físicos + eSIM): va con `estado: ausente`.
+
+## Pendiente (seguridad)
+
+- El servicio de accesibilidad mira eventos de todos los paquetes (filtra en código); falta limitar `packageNames` en
+  `res/xml/accesibilidad.xml` a los de telefonía.
+- La conexión va por `ws://` en claro (bien por USB con `adb reverse`); por Wi-Fi falta `wss://` con certificado fijado.
+- El agente no autentica al servidor (solo el servidor al agente, por token): falta un desafío HMAC con el token.
+- `sms_recibido` se da por entregado cuando OkHttp lo encola; si la conexión cae justo después puede perderse (el control
+  no confirma). El control puede pedir la bandeja con `sms_listar`.
 
 ## Extensiones al protocolo v1
 

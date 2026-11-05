@@ -21,8 +21,9 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import java.util.concurrent.TimeUnit
+import kotlin.random.Random
 
-/** WebSocket con reconexión exponencial 1, 2, 4… 30 s, para siempre. */
+/** WebSocket con reconexión exponencial 1, 2, 4… 30 s (con azar), para siempre. */
 class TransporteWebSocket(
     private val url: String,
     private val scope: CoroutineScope,
@@ -39,12 +40,21 @@ class TransporteWebSocket(
     @Volatile private var ws: WebSocket? = null
     private var bucle: Job? = null
 
-    override fun iniciar(saludo: () -> Mensaje, alRecibir: (Mensaje) -> Unit, alConectar: () -> Unit, alPerder: () -> Unit) {
+    override fun iniciar(saludo: () -> Mensaje, alRecibir: (Mensaje) -> Unit, alConectar: () -> Unit, alPerder: suspend () -> Unit) {
         if (bucle?.isActive == true) return
         bucle = scope.launch {
             var espera = 1_000L
             while (isActive) {
                 _estado.value = InfoConexion(EstadoConexion.CONECTANDO, url)
+                // Una URL que OkHttp no acepta no debe tumbar el proceso (y volver a tumbarlo al reiniciar).
+                val peticion = runCatching { Request.Builder().url(url).build() }
+                    .onFailure { Log.w(AgenteApp.TAG, "URL inválida: $url", it) }
+                    .getOrNull()
+                if (peticion == null) {
+                    _estado.value = InfoConexion(EstadoConexion.DESCONECTADO, "URL inválida: $url")
+                    delay(30_000)
+                    continue
+                }
                 val cerrado = Channel<String>(1)
                 var aceptado = false
                 var rechazado = false
@@ -56,21 +66,27 @@ class TransporteWebSocket(
                     override fun onMessage(webSocket: WebSocket, text: String) {
                         val m = Codec.decodificar(text)
                         if (m == null) {
-                            Log.w(AgenteApp.TAG, "mensaje desconocido: ${text.take(200)}")
+                            // Tipo desconocido o mal formado: si trae `req`, se contesta `parametro` para que el control
+                            // no espere hasta su timeout. Solo el tipo al registro: el texto podría llevar un PIN.
+                            val fallo = Codec.falloNoEntendido(text)
+                            Log.w(AgenteApp.TAG, "mensaje no entendido (${text.length} caracteres)${if (fallo != null) ": ${fallo.detalle}" else ""}")
+                            if (fallo != null) webSocket.send(Codec.codificar(fallo))
                             return
                         }
-                        when (m) {
-                            is Bienvenido -> {
-                                aceptado = true
-                                _estado.value = InfoConexion(EstadoConexion.CONECTADO, m.servidor)
-                                alConectar()
+                        runCatching {
+                            when (m) {
+                                is Bienvenido -> {
+                                    aceptado = true
+                                    _estado.value = InfoConexion(EstadoConexion.CONECTADO, m.servidor)
+                                    alConectar()
+                                }
+                                is Rechazado -> {
+                                    rechazado = true
+                                    _estado.value = InfoConexion(EstadoConexion.RECHAZADO, m.motivo)
+                                }
+                                else -> alRecibir(m)
                             }
-                            is Rechazado -> {
-                                rechazado = true
-                                _estado.value = InfoConexion(EstadoConexion.RECHAZADO, m.motivo)
-                            }
-                            else -> alRecibir(m)
-                        }
+                        }.onFailure { Log.e(AgenteApp.TAG, "error atendiendo un mensaje", it) }
                     }
 
                     override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
@@ -86,18 +102,20 @@ class TransporteWebSocket(
                         cerrado.trySend(t.message ?: t.javaClass.simpleName)
                     }
                 }
-                ws = cliente.newWebSocket(Request.Builder().url(url).build(), listener)
+                ws = cliente.newWebSocket(peticion, listener)
                 val motivo = cerrado.receive()
                 ws = null
-                if (aceptado) alPerder()
                 if (!rechazado) _estado.value = InfoConexion(EstadoConexion.DESCONECTADO, motivo)
-                val pausa = when {
+                // Antes de volver a conectar: el protocolo pide cerrar las sesiones USSD abiertas.
+                if (aceptado) runCatching { alPerder() }.onFailure { Log.w(AgenteApp.TAG, "alPerder falló", it) }
+                val base = when {
                     aceptado -> 1_000L
                     rechazado -> 30_000L
                     else -> espera
                 }
                 espera = if (aceptado) 1_000L else (espera * 2).coerceAtMost(30_000L)
-                delay(pausa)
+                // ±25 % de azar: varios teléfonos que perdieron el control a la vez no vuelven todos en el mismo instante.
+                delay((base * (0.75 + Random.nextDouble() * 0.5)).toLong())
             }
         }
     }

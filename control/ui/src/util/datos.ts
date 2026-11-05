@@ -1,14 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api } from "../api/cliente";
-import { useEvento } from "../api/eventos";
-import type { Dispositivo, Receta, Sim } from "../api/tipos";
+import { api, mensajeError } from "../api/cliente";
+import { useAlReconectar, useEvento } from "../api/eventos";
+import type { Dispositivo, ResumenReceta, Sim } from "../api/tipos";
 
 /** Lista de dispositivos: carga al inicio, se refresca con eventos y cada 10 s por si se pierde alguno. */
 export function useDispositivos() {
   const [lista, setLista] = useState<Dispositivo[]>([]);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const pendiente = useRef<number | null>(null);
 
   const cargar = useCallback(async () => {
     try {
@@ -17,7 +16,7 @@ export function useDispositivos() {
       setLista(d);
       setError(null);
     } catch (e) {
-      setError((e as Error).message);
+      setError(mensajeError(e));
     } finally {
       setCargando(false);
     }
@@ -30,22 +29,42 @@ export function useDispositivos() {
   }, [cargar]);
 
   // Varios eventos seguidos → una sola recarga.
+  const agrupada = useAgrupar(cargar, 250);
   useEvento((e) => {
-    if (!e.tipo.startsWith("dispositivo_") && e.tipo !== "adb") return;
-    if (pendiente.current) window.clearTimeout(pendiente.current);
-    pendiente.current = window.setTimeout(cargar, 250);
+    if (e.tipo.startsWith("dispositivo_") || e.tipo === "adb") agrupada();
   });
+  // Los eventos de mientras estuvo cortada la conexión se perdieron.
+  useAlReconectar(cargar);
 
   return { lista, cargando, error, recargar: cargar };
 }
 
+/** Lista de recetas: se relee cuando una cambia (`receta_cambiada`), cuando termina una ejecución (`uso`) y al reconectar. */
 export function useRecetas() {
-  const [lista, setLista] = useState<Receta[]>([]);
+  const [lista, setLista] = useState<ResumenReceta[]>([]);
   const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    api.recetas().then(setLista, (e) => setError((e as Error).message));
+  const [cargando, setCargando] = useState(true);
+  const cargar = useCallback(async () => {
+    try {
+      setLista(await api.recetas());
+      setError(null);
+    } catch (e) {
+      setError(mensajeError(e));
+    } finally {
+      setCargando(false);
+    }
   }, []);
-  return { lista, error };
+  useEffect(() => {
+    cargar();
+  }, [cargar]);
+  const agrupada = useAgrupar(cargar, 400);
+  useEvento((e) => {
+    if (e.tipo === "receta_cambiada") agrupada();
+    // Una ejecución terminada cambia `uso` y `sin_probar`.
+    else if (e.tipo === "receta" && e.fase === "fin") agrupada();
+  });
+  useAlReconectar(cargar);
+  return { lista, error, cargando, recargar: cargar };
 }
 
 export interface OpcionMenu {
@@ -85,7 +104,79 @@ export function hace(ms: number): string {
   return `hace ${Math.round(s / 3600)} h`;
 }
 
+/** Como `hace`, pero sigue con días ("hace 3 d") para fechas viejas. */
+export function haceLargo(ms: number | null | undefined): string {
+  if (!ms) return "nunca";
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (s < 2 * 86400) return hace(ms);
+  return `hace ${Math.round(s / 86400)} d`;
+}
+
 export const nombreSim = (slot: number) => `SIM ${slot + 1}`;
+
+/** Número local sin el prefijo de Bolivia: "+59178815232" → "78815232". */
+export const sinPrefijo = (n: string | null | undefined) => (n == null ? n : n.replace(/^\+?591/, "")) as string | null;
+
+/** "Infinix X678B · 012456": el modelo más el final del serial USB (o del id) para distinguir teléfonos iguales. */
+export const etiquetaTelefono = (d: Pick<Dispositivo, "modelo" | "adb_serial" | "id">) =>
+  `${d.modelo} · ${d.adb_serial?.slice(-6) ?? d.id.slice(0, 6)}`;
+
+/**
+ * Devuelve una función que junta llamadas seguidas en una sola, `ms` después de la última.
+ * Para recargar ante ráfagas de eventos sin pedir lo mismo diez veces.
+ */
+export function useAgrupar(fn: () => void, ms: number) {
+  const ref = useRef(fn);
+  ref.current = fn;
+  const t = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (t.current) window.clearTimeout(t.current);
+    },
+    [],
+  );
+  return useCallback(() => {
+    if (t.current) window.clearTimeout(t.current);
+    t.current = window.setTimeout(() => {
+      t.current = null;
+      ref.current();
+    }, ms);
+  }, [ms]);
+}
+
+/** El valor, pero solo después de `ms` sin cambios (para búsquedas mientras se escribe). */
+export function useRetrasado<T>(valor: T, ms: number): T {
+  const [v, setV] = useState(valor);
+  useEffect(() => {
+    const t = window.setTimeout(() => setV(valor), ms);
+    return () => window.clearTimeout(t);
+  }, [valor, ms]);
+  return v;
+}
+
+/** Lee y guarda una preferencia en el navegador; si no hay almacenamiento, vale solo mientras dura la página. */
+export function usePreferencia<T extends string>(clave: string, inicial: T, validas?: readonly T[]): [T, (v: T) => void] {
+  const [v, setV] = useState<T>(() => {
+    try {
+      const x = localStorage.getItem(clave) as T | null;
+      return x != null && (!validas || validas.includes(x)) ? x : inicial;
+    } catch {
+      return inicial;
+    }
+  });
+  const fijar = useCallback(
+    (x: T) => {
+      setV(x);
+      try {
+        localStorage.setItem(clave, x);
+      } catch {
+        /* sin almacenamiento */
+      }
+    },
+    [clave],
+  );
+  return [v, fijar];
+}
 
 const sinAcentos = (t: string) => t.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 

@@ -1,0 +1,25 @@
+nombre: tigo-dealer-saldo
+nombres_anteriores: [tigo-pda-saldo]
+titulo: Saldo dealer
+operador: TIGO
+descripcion: Consulta el saldo Tigo Money (el que gastan las recargas) de un chip Tigo dealer con *555# → 8 Consultar saldo → PIN. Solo lectura, no mueve dinero. El PIN se toma del guardado en el chip (o se escribe al ejecutar). Solo en chips marcados dealer.
+modo: pantalla
+# No es `saldo`: esa acción la usa el control solo (consulta automática del saldo principal) y no debe mandar el PIN.
+accion: saldo_dealer
+chip_tipo: dealer
+parametros:
+  - { nombre: pin, patron: '^\d{4,8}$', secreto: true, descripcion: PIN del chip dealer }
+# Pantallas medidas el 2026-11-03 (chip 77716151, Infinix X6728).
+pasos:
+  - marcar: "*555#"
+    esperar: 'Tigo Money'
+  - elegir: 'Consultar saldo'
+    # Tiene que pedir el PIN; si muestra otra cosa, se cancela sin enviarlo.
+    esperar: 'PIN'
+  - enviar: "{pin}"
+    error_si: 'incorrect|invalid|bloque|error'
+    exito: 'saldo total'
+salida:
+  # "Tu saldo total Tigo Money es de: Bs 211.06". Ojo: el menú dice "8- Consultar saldo ⏎ 9- Otros", así que la
+  # regex tiene que anclarse en "saldo total" y no en "saldo" a secas.
+  saldo_dealer: 'saldo total[^\n]*?Bs\.?\s*(\d+(?:[.,]\d{1,2})?)'

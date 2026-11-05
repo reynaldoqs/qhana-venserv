@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { Dispositivo } from "../api/tipos";
 import { Hash, MessageSquare, Search } from "./iconos";
 import { Icono, type NombreIcono } from "./iconos";
-import { cx } from "./base";
+import { cx, useAtraparFoco } from "./base";
 import { simsConChip } from "./dispositivo";
 import { etiquetaOperador } from "../util/datos";
 
@@ -40,6 +40,9 @@ export function Paleta({
   const [sel, setSel] = useState(0);
   const entrada = useRef<HTMLInputElement>(null);
   const lista = useRef<HTMLUListElement>(null);
+  const caja = useRef<HTMLDivElement>(null);
+  // Foco atrapado en la paleta, Esc la cierra y el foco vuelve a donde estaba.
+  useAtraparFoco(abierta, caja, cerrar);
 
   useEffect(() => {
     if (abierta) {
@@ -102,13 +105,13 @@ export function Paleta({
       onMouseDown={(e) => e.target === e.currentTarget && cerrar()}
     >
       <div
+        ref={caja}
         role="dialog"
         aria-modal="true"
         aria-label="Buscar acciones"
         className="w-full max-w-xl rounded-3xl bg-panel border border-borde shadow-elevada overflow-hidden"
         onKeyDown={(e) => {
-          if (e.key === "Escape") cerrar();
-          else if (e.key === "ArrowDown") {
+          if (e.key === "ArrowDown") {
             e.preventDefault();
             setSel((i) => Math.min(i + 1, filtradas.length - 1));
           } else if (e.key === "ArrowUp") {
@@ -126,21 +129,26 @@ export function Paleta({
             ref={entrada}
             value={q}
             onChange={(e) => setQ(e.target.value)}
+            data-autofocus
             role="combobox"
+            aria-label="Buscar acciones"
+            aria-autocomplete="list"
             aria-expanded
             aria-controls="paleta-lista"
+            aria-activedescendant={filtradas[sel] ? `paleta-op-${sel}` : undefined}
             placeholder="Ir a una vista, abrir USSD de un chip…"
             className="flex-1 bg-transparent outline-none text-sm placeholder:text-tenue"
           />
           <kbd className="text-[11px] text-tenue rounded-md bg-panel-2 px-1.5 py-0.5">Esc</kbd>
         </div>
-        <ul id="paleta-lista" ref={lista} role="listbox" className="max-h-80 overflow-y-auto p-2">
+        <ul id="paleta-lista" ref={lista} role="listbox" aria-label="Resultados" className="max-h-80 overflow-y-auto p-2">
           {filtradas.length === 0 && (
             <li className="px-4 py-8 text-center text-sm text-tenue">Nada coincide con “{q}”.</li>
           )}
           {filtradas.map((o, i) => (
             <li
               key={o.clave}
+              id={`paleta-op-${i}`}
               role="option"
               aria-selected={i === sel}
               onMouseMove={() => setSel(i)}
