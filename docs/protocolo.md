@@ -282,7 +282,10 @@ salida:
 
 Cuando el paso que mueve dinero no es elegir una opción sino escribir algo (p. ej. el PIN del dealer), se usa
 `enviar` con `mueve_dinero: true`: nunca se reintenta, desde ahí todo corte es `incierto` y en `simular` **no se
-envía** (la receta termina `simulado` en la pantalla anterior). Solo vale en `enviar`.
+envía** (la receta termina `simulado` en la pantalla anterior). Vale en `enviar` y en `marcar`: un código que hace la
+operación de una vez, sin pantalla de confirmación (p. ej. `*601*PIN*número*monto#` de Viva dealer), va como
+`marcar` con `mueve_dinero: true`; en `simular` no se marca nada. Sin confirmación no hay qué `verificar`: el código
+se arma solo con parámetros validados.
 
 Modificadores de un paso:
 
@@ -292,7 +295,7 @@ Modificadores de un paso:
 | `error_si: regex` | Si la respuesta coincide, aborta con ese texto como motivo |
 | `exito: regex` | Si coincide, la receta terminó bien. Si no hay `exito` en ningún paso, basta con llegar al final |
 | `timeout_ms` | Tiempo máximo de ese paso |
-| `mueve_dinero: true` | Solo en `enviar`: ese envío es el que mueve dinero (ver arriba) |
+| `mueve_dinero: true` | Solo en `enviar` o `marcar`: ese paso es el que mueve dinero (ver arriba) |
 
 Parámetros: `{ nombre, patron?, opciones?, descripcion?, secreto? }`. `secreto: true` (un PIN) hace que el valor se
 muestre como `••••` en `Resultado.pasos[].enviado`, en el historial (`parametros` de la ejecución) y en todo evento
@@ -541,10 +544,10 @@ ese chip y corren esa receta** (por ejemplo `tigo-dealer-recargar` desde el chip
 - Una fila con `operador` distinto del del chip es `error`. La columna `accion` se ignora.
 - Cupo y saldo: con `accion: transferir` cuentan como siempre (los del chip). Con otra acción (recargar), el cupo es
   `limites.por_dia` de esa receta (sin límite si no tiene) y el saldo principal **no** se usa para repartir ni para
-  verificar: una recarga de dealer gasta otro saldo. Si el chip es `dealer`, tiene PIN guardado y hay receta
-  `accion: saldo_dealer`, el lote cuadra con el **saldo dealer**: al `iniciar` (real) se consulta y se guarda como saldo
-  inicial, y `verificar` lo compara con el saldo dealer de ese momento (ver `verificar`). Si no (chip normal, sin PIN o
-  sin receta), no se guarda saldo inicial y `verificar` responde `409 no_aplica`.
+  verificar: una recarga de dealer gasta otro saldo. Si el chip es `dealer`, hay receta `accion: saldo_dealer`
+  y tiene PIN guardado si esa receta lo pide, el lote cuadra con el **saldo dealer**: al `iniciar` (real) se consulta y se guarda como saldo
+  inicial, y `verificar` lo compara con el saldo dealer de ese momento (ver `verificar`). Si no (chip normal, sin PIN
+  cuando la receta lo pide, o sin receta), no se guarda saldo inicial y `verificar` responde `409 no_aplica`.
 - `Validacion.origen` y `Lote.origen` devuelven el origen con `operador` y `numero` del chip completados.
 
 ## Lote desde chips elegidos (`origen.chips`)
@@ -562,7 +565,7 @@ chips dealer) y el lote se reparte solo entre ellos, en paralelo.
   lo pide). Un chip que no sirve es `400 parametro` con el motivo, salvo que el resto alcance: entonces va en
   `Validacion.avisos_origen` y se excluye.
 - Cupo, saldo y verificación por chip, con las mismas reglas del lote de un chip (saldo principal para transferir;
-  saldo dealer para recargar desde un chip dealer con PIN y receta `saldo_dealer`; si no, sin saldo para cuadrar ese chip).
+  saldo dealer para recargar desde un chip dealer con receta `saldo_dealer` (y PIN si la pide); si no, sin saldo para cuadrar ese chip).
 - El origen viejo `{ dispositivo, slot, receta }` sigue valiendo y equivale a un solo chip con esa receta.
 - `Validacion.origen` y `Lote.origen` devuelven `{ "chips": [ { dispositivo, slot, operador, numero, tipo, receta } ],
   "accion" }` (con `receta` = la que correrá ese chip). Para el origen viejo, además `dispositivo`, `slot` y `receta`
@@ -862,9 +865,9 @@ por sí solo **no** significa éxito: solo que el ejecutor ya no tiene nada más
 ### `POST /api/lotes/{id}/verificar`
 
 Con varios chips o acciones mezcladas, la verificación se hace **por chip y por tipo de saldo**: cada fila de `chips`
-lleva `saldo` (`principal` para lo transferido, `dealer` para lo recargado desde un chip dealer con PIN y receta
-`saldo_dealer`). Un chip que recargó sin forma de consultar su saldo dealer sale `sin_dato` con un aviso ("no hay receta
-de saldo dealer para ENTEL"). El `saldo` de arriba es `principal`, `dealer` o `mixto`. `409 no_aplica` solo si ningún chip
+lleva `saldo` (`principal` para lo transferido, `dealer` para lo recargado desde un chip dealer con receta
+`saldo_dealer`, y PIN si la pide). Un chip que recargó sin forma de consultar su saldo dealer sale `sin_dato` con un
+aviso ("no hay receta de saldo dealer para VIVA"). El `saldo` de arriba es `principal`, `dealer` o `mixto`. `409 no_aplica` solo si ningún chip
 se puede cuadrar.
 
 Lotes de transferencias: cuadra con el saldo principal. Lote de un chip con otra acción (recargas) desde un chip dealer:
@@ -938,7 +941,7 @@ y devuelve la lista actualizada. Cada ejecución de una receta `accion: saldo` a
 `ChipInfo.saldo_dealer` y `saldo_dealer_ms` (`null` si nunca se consultó). Lo fija cada ejecución `ok` de una receta
 `accion: saldo_dealer` (su `salida` debe incluir `saldo_dealer`), y es **del chip** (lo sigue si cambia de ranura).
 `POST /api/chips/saldos` también corre, después del saldo principal, la receta `saldo_dealer` de cada chip `dealer` en
-línea que la tenga y tenga PIN guardado (los que no tienen PIN se saltan). Ninguna consulta automática (cambio de
+línea que la tenga (si la receta pide PIN, solo los que lo tienen guardado; `entel-dealer-saldo` no lo pide). Ninguna consulta automática (cambio de
 chip, validar o iniciar un lote) corre `saldo_dealer`: envía el PIN y solo se hace cuando alguien lo pide.
 
 ## Cambio de chips

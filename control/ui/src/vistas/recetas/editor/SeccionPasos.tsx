@@ -178,10 +178,15 @@ function TarjetaPaso({ p, i, total, destacado }: { p: PasoModelo; i: number; tot
         </button>
       </div>
 
-      {p.accion === "enviar" && (
+      {(p.accion === "enviar" || p.accion === "marcar") && (
         <div className={cx("mt-3 rounded-xl px-3 py-2.5", p.mueve_dinero ? "bg-aviso-suave" : "bg-panel-2/50")}>
           <Casilla marcada={!!p.mueve_dinero} onCambio={(v) => cambiar(fijarModificador(i, "mueve_dinero", v))}>
-            Este envío mueve dinero <span className="text-tenue text-xs">(p. ej. el PIN que confirma: nunca se reintenta y al simular no se envía)</span>
+            {p.accion === "marcar" ? "Este código mueve dinero" : "Este envío mueve dinero"}{" "}
+            <span className="text-tenue text-xs">
+              {p.accion === "marcar"
+                ? "(hace la operación de una vez, sin confirmación: nunca se reintenta y al simular no se marca)"
+                : "(p. ej. el PIN que confirma: nunca se reintenta y al simular no se envía)"}
+            </span>
           </Casilla>
           <MensajesCampo errores={problemasDe(errores, n, ["mueve_dinero"])} avisos={problemasDe(avisos, n, ["mueve_dinero"])} />
         </div>

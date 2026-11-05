@@ -1,0 +1,26 @@
+nombre: viva-dealer-recargar
+titulo: Recarga de crédito dealer
+operador: VIVA
+descripcion: Recarga de crédito a un número Viva desde un chip Viva dealer con *601*PIN*número*monto#. El monto va en Bs enteros. El PIN se toma del guardado en el chip (o se escribe al ejecutar). MUEVE DINERO al marcar (no hay pantalla de confirmación); solo en chips marcados dealer.
+modo: pantalla
+accion: recargar
+chip_tipo: dealer
+parametros:
+  - { nombre: numero, patron: '^[67]\d{7}$', descripcion: Número Viva del cliente }
+  # Solo Bs enteros (según Rey, 2026-11-05). Montos libres con patrón: un lote manda cada fila en un solo envío y un
+  # monto con centavos (1.50) es error.
+  - { nombre: monto, patron: '^[1-9]\d*$', descripcion: Monto en Bs enteros (p. ej. 5) }
+  - { nombre: pin, patron: '^\d{4,8}$', secreto: true, descripcion: PIN del chip dealer }
+# 2026-11-05: código según Rey; las pantallas NO están medidas (no había chip Viva en línea).
+# El código hace la recarga de una vez: el `marcar` es el paso que mueve dinero. En `simular` no se marca nada, y
+# desde que se marca todo corte es `incierto` (nunca se reintenta). El PIN va dentro del código: el historial y los
+# eventos lo muestran tapado.
+pasos:
+  - marcar: "*601*{pin}*{numero}*{monto_entero}#"
+    mueve_dinero: true
+    error_si: '(?i)pin.{0,20}(incorrect|invalid|errad)|insuficiente|no (es|eres|esta) .*(dealer|distribuidor|habilitad)|rechaz|bloque|no se pudo|no pudo|invalid|error'
+    # Sin medir. Si la respuesta real no coincide, la recarga queda `incierto` (no se reintenta): revisa el saldo y
+    # ajusta esta regex con el texto que dio Viva.
+    exito: '(?i)(recarga|transferencia|venta)[^\n]*(exito|realizad|correct|procesad)|exitos'
+salida:
+  saldo_dealer: '(?i)saldo[^\n\d]*?(?:Bs\.?:?\s*)?(\d+(?:[.,]\d{1,2})?)'

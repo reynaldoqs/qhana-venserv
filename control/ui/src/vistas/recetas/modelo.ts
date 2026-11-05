@@ -104,7 +104,7 @@ export function leer(yaml: string): Lectura {
   return { ok: true, doc, modelo };
 }
 
-/** true si algún paso mueve dinero (`confirmar` o `enviar` con `mueve_dinero`). Igual que `mueve_dinero` del control. */
+/** true si algún paso mueve dinero (`confirmar`, o `enviar`/`marcar` con `mueve_dinero`). Igual que `mueve_dinero` del control. */
 export const mueveDinero = (m: RecetaModelo) => m.pasos.some((p) => p.accion === "confirmar" || p.mueve_dinero);
 
 /** `{monto}`, `{numero}`… usados en los pasos y la salida. */
@@ -228,14 +228,14 @@ export const insertarPaso = (i: number, accion: Accion = "elegir", valor = ""): 
   seq(d, "pasos").items.splice(i, 0, nuevoPaso(accion, valor));
 };
 
-/** Cambia la acción de un paso conservando el valor y su lugar en el mapa. `mueve_dinero` solo vale en `enviar`. */
+/** Cambia la acción de un paso conservando el valor y su lugar en el mapa. `mueve_dinero` solo vale en `enviar` y `marcar`. */
 export const cambiarAccion = (i: number, nueva: Accion): Cambio => (d) => {
   const paso = d.getIn(["pasos", i], true);
   if (!isMap(paso)) return;
   const par = paso.items.find((p) => isPair(p) && isScalar(p.key) && ACCIONES.includes(String(p.key.value) as Accion));
   if (par && isScalar(par.key)) par.key.value = nueva;
   else paso.items.unshift(new Pair(new Scalar(nueva), escalar("")));
-  if (nueva !== "enviar") paso.delete("mueve_dinero");
+  if (nueva !== "enviar" && nueva !== "marcar") paso.delete("mueve_dinero");
 };
 
 /** Fija el valor de la acción del paso (`marcar: "*555#"` → el código). */

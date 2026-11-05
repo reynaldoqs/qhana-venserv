@@ -25,7 +25,7 @@ echo "== instalando $APK"
 a install -r -g "$APK" >/dev/null
 
 echo "== permisos"
-for p in CALL_PHONE READ_PHONE_STATE READ_PHONE_NUMBERS RECEIVE_SMS READ_SMS POST_NOTIFICATIONS; do
+for p in CALL_PHONE READ_PHONE_STATE READ_PHONE_NUMBERS RECEIVE_SMS READ_SMS POST_NOTIFICATIONS WRITE_SECURE_SETTINGS; do
   a shell pm grant "$PKG" "android.permission.$p" 2>/dev/null || echo "   (no se pudo conceder $p)"
 done
 

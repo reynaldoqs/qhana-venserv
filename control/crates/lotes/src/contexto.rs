@@ -279,7 +279,7 @@ impl Contexto {
         {
             return Err(format!("la receta '{}' pide '{}', que un lote no tiene", receta.nombre, p.nombre));
         }
-        if receta.parametros.iter().any(|p| p.secreto && p.nombre == "pin") && !chip.tiene_pin {
+        if pide_pin(&receta) && !chip.tiene_pin {
             return Err("sin PIN guardado: guárdalo en el Panel antes de usarlo en un lote".into());
         }
         let limite = receta.limites.as_ref().and_then(|l| l.por_dia);
@@ -451,14 +451,14 @@ impl Contexto {
         Ok(OrigenResuelto { origen: completo, accion, recetas: recetas_op, chips: validos, sin_chip, avisos: motivos, un_chip: false })
     }
 
-    /// Receta de saldo dealer del chip, si se puede consultar: en línea, `dealer`, con PIN guardado y con receta
-    /// `accion: saldo_dealer` para su operador.
+    /// Receta de saldo dealer del chip, si se puede consultar: en línea, `dealer`, con receta `accion: saldo_dealer`
+    /// para su operador y, si esa receta pide PIN (Tigo; Entel no), con PIN guardado.
     pub fn receta_saldo_dealer(&self, dispositivo: &str, slot: u32) -> Option<Receta> {
         let c = self.chips().into_iter().find(|c| c.dispositivo == dispositivo && c.slot == slot)?;
-        if c.tipo != TIPO_DEALER || !c.tiene_pin {
+        if c.tipo != TIPO_DEALER {
             return None;
         }
-        self.receta_para_tipo(&c.operador, ACCION_SALDO_DEALER, &c.tipo)
+        self.receta_para_tipo(&c.operador, ACCION_SALDO_DEALER, &c.tipo).filter(|r| c.tiene_pin || !pide_pin(r))
     }
 
     /// Por qué no se puede consultar el saldo dealer del chip (para los avisos de `verificar`).
@@ -473,7 +473,7 @@ impl Contexto {
         }
     }
 
-    /// Consulta ahora el saldo dealer del chip (envía el PIN guardado). `None` si no se puede o no se leyó.
+    /// Consulta ahora el saldo dealer del chip (envía el PIN guardado si la receta lo pide). `None` si no se puede o no se leyó.
     pub async fn consultar_saldo_dealer(&self, dispositivo: &str, slot: u32) -> Option<f64> {
         let receta = self.receta_saldo_dealer(dispositivo, slot)?;
         let desde = ahora_ms();
@@ -938,7 +938,8 @@ impl Contexto {
     /// Consulta el saldo de los chips en línea (de `operadores`, o de todos). Solo los que no tienen un dato
     /// más nuevo que `max_edad_ms` (None = todos). En paralelo entre teléfonos, en serie dentro de cada uno.
     /// Los teléfonos ocupados se saltan.
-    /// Con `con_dealer`, también el saldo dealer de los chips dealer con PIN guardado (envía el PIN: solo a pedido).
+    /// Con `con_dealer`, también el saldo dealer de los chips dealer (con PIN guardado si su receta lo pide; envía
+    /// el PIN: solo a pedido).
     pub async fn consultar_saldos(
         self: &Arc<Self>,
         operadores: Option<&[String]>,
@@ -954,9 +955,9 @@ impl Contexto {
                     continue;
                 }
             }
-            // Después del principal, el dealer (si se pidió y hay PIN para enviar).
-            if con_dealer && c.tipo == TIPO_DEALER && c.tiene_pin {
-                if let Some(r) = self.receta_para_tipo(&c.operador, ACCION_SALDO_DEALER, &c.tipo) {
+            // Después del principal, el dealer (si se pidió y, si la receta pide PIN, hay PIN para enviar).
+            if con_dealer && c.tipo == TIPO_DEALER {
+                if let Some(r) = self.receta_para_tipo(&c.operador, ACCION_SALDO_DEALER, &c.tipo).filter(|r| c.tiene_pin || !pide_pin(r)) {
                     por_disp.entry(c.dispositivo.clone()).or_default().push((c.slot, r));
                 }
             }
@@ -990,4 +991,9 @@ impl Contexto {
         while tareas.join_next().await.is_some() {}
         self.chips()
     }
+}
+
+/// La receta pide el PIN del chip (parámetro secreto `pin`): Tigo dealer sí, Entel dealer no.
+fn pide_pin(r: &Receta) -> bool {
+    r.parametros.iter().any(|p| p.secreto && p.nombre == "pin")
 }

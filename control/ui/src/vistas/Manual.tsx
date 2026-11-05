@@ -102,9 +102,21 @@ const RECETAS: RecetaDoc[] = [
     tipo: "Mueve dinero",
     codigo: "*133*número*monto#",
     pasos: "Marca el código completo, verifica «recargar Bs … al telefono», confirma «Si».",
-    params: "numero (8 dígitos) · monto: solo «050» (= Bs 0.50, en centavos con 3 dígitos)",
+    params: "numero (8 dígitos) · monto en Bs: 0.50 o enteros (1, 5, 100…)",
     salida: "saldo_transferencia, monto_bs",
-    nota: "Solo para chips marcados dealer. Por ahora solo se verificó el monto 050; agregar otros únicamente tras probar cómo los muestra la confirmación.",
+    nota: "Solo para chips marcados dealer. El código lleva Bs enteros (*133*N*1# = Bs 1); la única fracción es 0.50, que se marca 050. Otros centavos (1.50, 0.25) son error. Cada fila de un lote es un solo envío: Bs 100 se marca *133*N*100#.",
+    dealer: true,
+  },
+  {
+    nombre: "entel-dealer-saldo",
+    titulo: "Saldo dealer",
+    operador: "ENTEL",
+    tipo: "Consulta",
+    codigo: "*133# → 1",
+    pasos: "Marca *133# y elige «Saldo para transferencia».",
+    params: "—",
+    salida: "saldo_dealer",
+    nota: "Solo chips Entel marcados dealer. No pide PIN ni mueve dinero. Es el saldo que gastan las recargas y con el que se cuadra un lote de recargas Entel. El texto de la respuesta aún no está medido.",
     dealer: true,
   },
   {
@@ -142,6 +154,30 @@ const RECETAS: RecetaDoc[] = [
     salida: "linea, saldo_total, saldo_principal, datos",
     nota: "Gratis y solo consulta.",
   },
+  {
+    nombre: "viva-dealer-saldo",
+    titulo: "Saldo dealer",
+    operador: "VIVA",
+    tipo: "Consulta",
+    codigo: "*604#",
+    pasos: "Marca *604# y lee el saldo de la respuesta.",
+    params: "—",
+    salida: "saldo_dealer",
+    nota: "Solo chips Viva marcados dealer. No mueve dinero. La pantalla aún no está medida: si *604# muestra un menú o pide PIN, termina en error sin enviar nada y hay que ajustar la receta.",
+    dealer: true,
+  },
+  {
+    nombre: "viva-dealer-recargar",
+    titulo: "Recarga de crédito dealer",
+    operador: "VIVA",
+    tipo: "Mueve dinero",
+    codigo: "*601*PIN*número*monto#",
+    pasos: "Marca el código completo. No hay pantalla de confirmación: la recarga se hace al marcar.",
+    params: "numero (8 dígitos) · monto en Bs enteros (1, 5, 100…) · pin (se toma del PIN guardado en el chip)",
+    salida: "saldo_dealer (si la respuesta lo trae)",
+    nota: "Solo chips Viva marcados dealer, con PIN guardado. Simular no marca nada (no hay cómo llegar a una confirmación). Centavos (1.50) son error. El PIN va dentro del código pero queda tapado en el historial. La respuesta aún no está medida: hasta ajustarla, una recarga real puede quedar «Incierta»; revisa el saldo.",
+    dealer: true,
+  },
 ];
 
 const EJEMPLO = `numero;monto;operador;referencia
@@ -163,11 +199,43 @@ const EJEMPLO_CHIPS = `numero,monto,operador,referencia
 69869869,5,TIGO,Cliente 1
 71234567,0.50,ENTEL,Cliente 2`;
 
+type TipoLoteDoc = { titulo: string; quien: string; obligatorias: string; opcionales: string; ejemplo: string; nota: string };
+
+const TIPOS_LOTE: TipoLoteDoc[] = [
+  {
+    titulo: "1. Transferencias",
+    quien: "Cada fila va a los chips de su operador que estén en línea.",
+    obligatorias: "numero, monto, operador",
+    opcionales: "accion (vacía = transferir), referencia",
+    ejemplo: `numero,monto,operador
+69869869,10,TIGO`,
+    nota: "Transferir Tigo solo tiene 1, 2, 5, 10 y 20 Bs: 12 se manda como 10 + 2 (dos envíos, dos comisiones) y 12.50 es error.",
+  },
+  {
+    titulo: "2. Recargas de varios operadores",
+    quien: "Cada fila va a los chips dealer de su operador. Tigo, Entel y Viva trabajan a la vez.",
+    obligatorias: "numero, monto, operador, accion (= recargar en cada fila)",
+    opcionales: "referencia",
+    ejemplo: `numero,monto,operador,accion
+71234567,100,ENTEL,recargar`,
+    nota: "accion es obligatoria: una fila sin accion se toma como transferencia (la pantalla avisa «Este CSV no dice «recargar»»). Tigo dealer acepta centavos (12.30) y necesita PIN guardado; Entel dealer acepta 0.50 o enteros y no pide PIN; Viva dealer acepta solo enteros y necesita PIN guardado.",
+  },
+  {
+    titulo: "3. Desde chips elegidos",
+    quien: "Marcas uno o varios chips y la acción en la pantalla; el lote se reparte solo entre ellos.",
+    obligatorias: "numero, monto (y operador si los chips son de varios operadores)",
+    opcionales: "referencia",
+    ejemplo: `numero,monto
+69869869,5`,
+    nota: "La acción se elige en la pantalla: una columna accion se ignora. Un chip que no sirve para esa acción (normal para recargar, Tigo dealer sin PIN) queda fuera con el motivo.",
+  },
+];
+
 const COLUMNAS: [string, string, string][] = [
   ["numero", "Sí", "8 dígitos. Se limpian espacios, guiones, puntos y el prefijo +591 o 591."],
   ["monto", "Sí", "Bs con hasta 2 decimales: 12, 12,00, «Bs 12», 1.50. Con centavos solo si la receta no tiene montos fijos: transferir Tigo (1, 2, 5, 10, 20) no los acepta; la recarga dealer sí."],
   ["operador", "Sí (en «Desde chips elegidos», solo si los chips son de varios operadores)", "TIGO, ENTEL o VIVA (también NUEVATEL). Mayúsculas y acentos no importan. No se deduce del número porque hay portabilidad."],
-  ["accion", "No", "Qué hacer: «transferir» (si falta) o «recargar». En «Desde chips elegidos» manda la acción elegida y la columna se ignora."],
+  ["accion", "Solo en «Recargas de varios operadores»", "Qué hacer: «transferir» (si falta) o «recargar». En «Recargas de varios operadores» cada fila debe decir «recargar». En «Desde chips elegidos» manda la acción elegida y la columna se ignora."],
   ["referencia", "No", "Texto libre (n.º de pedido, nombre). Vuelve igual en el CSV de resultados."],
 ];
 
@@ -360,6 +428,30 @@ export function Manual({ seccion, ir }: { seccion: string; ir: (id: string) => v
           </Seccion>
 
           <Seccion id="csv" titulo="El CSV del lote" intro="Una fila por operación. Se puede armar en Excel y guardar como CSV.">
+            <Sub>Los tres tipos de lote</Sub>
+            <p className="text-tenue">
+              En <b className="text-texto">Lotes → Nuevo</b> eliges el tipo. Cambia quién envía y qué columnas lleva el CSV. En los tres el monto va en Bs.
+            </p>
+            <div className="grid gap-3 md:grid-cols-3">
+              {TIPOS_LOTE.map((t) => (
+                <div key={t.titulo} className="rounded-2xl bg-panel-2/60 p-4 flex flex-col gap-2.5 min-w-0">
+                  <h4 className="font-semibold">{t.titulo}</h4>
+                  <p className="text-tenue text-[13px]">{t.quien}</p>
+                  <div>
+                    <div className="text-[10px] uppercase tracking-[0.14em] text-tenue font-semibold">Obligatorias</div>
+                    <div className="font-mono text-[12px] mt-0.5 break-words">{t.obligatorias}</div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] uppercase tracking-[0.14em] text-tenue font-semibold">Opcionales</div>
+                    <div className="font-mono text-[12px] mt-0.5 break-words">{t.opcionales}</div>
+                  </div>
+                  <pre className="rounded-xl bg-black/25 p-3 font-mono text-[12px] overflow-x-auto">{t.ejemplo}</pre>
+                  <p className="text-tenue text-[12px]">{t.nota}</p>
+                </div>
+              ))}
+            </div>
+
+            <Sub>Columnas</Sub>
             <div className="overflow-x-auto">
               <table className="w-full text-left">
                 <thead>
@@ -406,7 +498,7 @@ export function Manual({ seccion, ir }: { seccion: string; ir: (id: string) => v
                 <b>Desde chips elegidos</b>: en Nuevo lote elige ese tipo, marca uno o varios chips y la acción (recargar o transferir). Ver <a href="#manual/recargas" className="underline underline-offset-2">Recargas y chips dealer</a>.
               </li>
               <li>
-                <b>Montos grandes se parten</b> en los montos que permite la receta (12 → 10 + 2; 37 → 20 + 10 + 5 + 2), usando la menor cantidad de envíos. Cada envío cuesta comisión.
+                <b>Con montos fijos, los montos grandes se parten</b> en los que permite la receta (transferir Tigo: 12 → 10 + 2; 37 → 20 + 10 + 5 + 2), usando la menor cantidad de envíos. Cada envío cuesta comisión. Las recargas dealer no tienen montos fijos: cada fila es un solo envío.
               </li>
             </ul>
           </Seccion>
@@ -419,7 +511,7 @@ export function Manual({ seccion, ir }: { seccion: string; ir: (id: string) => v
             <Sub>Los montos van en Bs</Sub>
             <p>
               Siempre en Bs, con punto o coma: <Codigo>0.50</Codigo>, <Codigo>5</Codigo>, <Codigo>12.30</Codigo>. Cada receta lo traduce sola a lo que
-              pide su USSD (Entel dealer marca <Codigo>050</Codigo> para Bs 0.50). Una receta con montos fijos (transferir Tigo: 1, 2, 5, 10, 20) no
+              pide su USSD (Entel dealer marca <Codigo>050</Codigo> para Bs 0.50 y el entero tal cual: Bs 100 → <Codigo>*133*N*100#</Codigo>). Una receta con montos fijos (transferir Tigo: 1, 2, 5, 10, 20) no
               acepta centavos.
             </p>
 
@@ -464,7 +556,7 @@ export function Manual({ seccion, ir }: { seccion: string; ir: (id: string) => v
                 En el detalle del lote, «Carriles por teléfono» muestra qué hace cada chip, cuánto lleva y cuándo termina más o menos.
               </li>
               <li>
-                Al verificar, cada chip se cuadra con su saldo: el principal lo transferido y el dealer lo recargado (consultarlo envía el PIN guardado).
+                Al verificar, cada chip se cuadra con su saldo: el principal lo transferido y el dealer lo recargado (en Tigo consultarlo envía el PIN guardado; Entel no pide PIN).
               </li>
             </ul>
           </Seccion>

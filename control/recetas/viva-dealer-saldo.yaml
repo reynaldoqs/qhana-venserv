@@ -1,0 +1,20 @@
+nombre: viva-dealer-saldo
+titulo: Saldo dealer
+operador: VIVA
+descripcion: Consulta el saldo dealer (el que gastan las recargas) de un chip Viva dealer con *604#. Solo lectura, no mueve dinero. Solo en chips marcados dealer.
+modo: pantalla
+# No es `saldo`: esa acción es la del saldo principal (`viva-saldo`, *105#).
+accion: saldo_dealer
+chip_tipo: dealer
+parametros: []
+# 2026-11-05: código según Rey; la pantalla de *604# aún NO está medida (no había chip Viva en línea). Se asume que
+# responde el saldo directamente. Si muestra un menú o pide PIN, la receta termina en error sin enviar nada más:
+# medirla en la Consola USSD y ajustar los pasos.
+pasos:
+  - marcar: "*604#"
+    error_si: '(?i)no (es|eres|esta) .*(dealer|distribuidor|habilitad)|no autorizad|invalid'
+    exito: '(?i)saldo[^\n]*\d'
+salida:
+  # Acepta "Saldo: Bs 120.50", "Su saldo es de 120.50 Bs", "SALDO Bs:120.50". No coincide con una línea de menú
+  # sin cifras ("1. Saldo").
+  saldo_dealer: '(?i)saldo[^\n\d]*?(?:Bs\.?:?\s*)?(\d+(?:[.,]\d{1,2})?)'

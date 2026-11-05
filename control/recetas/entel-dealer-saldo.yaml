@@ -1,0 +1,22 @@
+nombre: entel-dealer-saldo
+titulo: Saldo dealer
+operador: ENTEL
+descripcion: Consulta el saldo para transferencia (el que gastan las recargas) de un chip Entel dealer con *133# → 1 Saldo para transferencia. Solo lectura, no mueve dinero ni pide PIN. Solo en chips marcados dealer.
+modo: pantalla
+# No es `saldo`: esa acción es la del saldo principal (`entel-saldo`, *105#).
+accion: saldo_dealer
+chip_tipo: dealer
+parametros: []
+# Menú medido el 2026-10-30 (chip 63053831): "1 Saldo para transferencia / 2 Saldo Pre-pago / 3 Consulta de
+# transferencia". En un chip Entel normal *133# responde "El numero de dealer no existe".
+pasos:
+  - marcar: "*133#"
+    error_si: 'numero de dealer no existe'
+    esperar: 'Saldo para transferencia'
+  - elegir: 'Saldo para transferencia'
+    exito: 'transferencia[^\n]*\d'
+salida:
+  # Sin medir la respuesta de la opción 1. Tras una recarga Entel dice "Su saldo actual para transferencia es de
+  # Bs. 9.02"; la regex acepta "Bs." antes o después del número. El menú ("1 Saldo para transferencia") no tiene
+  # cifras en esa línea, así que no coincide.
+  saldo_dealer: 'transferencia[^\n\d]*?(?:Bs\.?\s*)?(\d+(?:[.,]\d{1,2})?)'

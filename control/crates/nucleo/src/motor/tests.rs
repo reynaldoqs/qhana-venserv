@@ -489,6 +489,71 @@ async fn entel_dealer_verifica_el_monto_que_muestra_la_confirmacion() {
 }
 
 #[tokio::test]
+async fn entel_dealer_saldo_lee_el_saldo_para_transferencia() {
+    let r = Receta::desde_yaml(include_str!("../../../../recetas/entel-dealer-saldo.yaml")).unwrap();
+    let c = entel_dealer();
+    let res = ejecutar(&r, &c, 0, &p(&[]), false).await;
+    assert_eq!(res.estado, EstadoResultado::Ok, "{res:?}");
+    assert_eq!(*c.envios.lock().unwrap(), vec!["*133#", "1"]);
+    assert_eq!(res.salida["saldo_dealer"], "10.00");
+    // Las dos formas posibles de la respuesta (la de opción 1 no está medida).
+    let re = regex::Regex::new(&r.salida["saldo_dealer"]).unwrap();
+    let leer = |t: &str| re.captures(t).map(|c| c[1].to_string());
+    assert_eq!(leer("Su saldo actual para transferencia es de Bs. 9.02").as_deref(), Some("9.02"));
+    assert_eq!(leer("Su saldo para transferencia es de 35.50 Bs.").as_deref(), Some("35.50"));
+    assert_eq!(leer("Escoja una opcion\n1 Saldo para transferencia\n2 Saldo Pre-pago"), None);
+}
+
+const VIVA_DEALER: &str = include_str!("../../../../recetas/viva-dealer-recargar.yaml");
+
+#[tokio::test]
+async fn viva_dealer_simular_no_marca_el_codigo_que_mueve_dinero() {
+    let r = Receta::desde_yaml(VIVA_DEALER).unwrap();
+    assert_eq!(r.paso_que_mueve_dinero(), Some(0));
+    let c = CanalFalso::new(vec![LineaSimulada::entel("71227468", 0.0)]);
+    let ps = p(&[("numero", "71234567"), ("monto", "5"), ("pin", "4321")]);
+    let res = ejecutar(&r, &c, 0, &ps, true).await;
+    assert_eq!(res.estado, EstadoResultado::Simulado, "{res:?}");
+    assert!(c.envios.lock().unwrap().is_empty(), "simular no marca nada");
+}
+
+#[tokio::test]
+async fn viva_dealer_marca_bs_enteros_tapa_el_pin_y_sin_exito_es_incierto() {
+    let r = Receta::desde_yaml(VIVA_DEALER).unwrap();
+    let c = CanalFalso::new(vec![LineaSimulada::entel("71227468", 0.0)]);
+    let ps = p(&[("numero", "71234567"), ("monto", "Bs 5,00"), ("pin", "4321")]);
+    let res = ejecutar(&r, &c, 0, &ps, false).await;
+    assert_eq!(c.envios.lock().unwrap()[0], "*601*4321*71234567*5#");
+    let mostrado = res.pasos[0].enviado.clone().unwrap();
+    assert!(!mostrado.contains("4321"), "el PIN no queda en el historial: {mostrado}");
+    // Ya se marcó: una respuesta que no es la de éxito no puede ser 'abortado' (el dinero pudo salir).
+    assert_eq!(res.estado, EstadoResultado::Incierto, "{res:?}");
+}
+
+#[tokio::test]
+async fn viva_dealer_no_acepta_centavos() {
+    let r = Receta::desde_yaml(VIVA_DEALER).unwrap();
+    for monto in ["1.50", "0.50"] {
+        let c = CanalFalso::new(vec![LineaSimulada::entel("71227468", 0.0)]);
+        let res = ejecutar(&r, &c, 0, &p(&[("numero", "71234567"), ("monto", monto), ("pin", "4321")]), false).await;
+        assert_eq!(res.estado, EstadoResultado::Error, "{monto}: {res:?}");
+        assert!(c.envios.lock().unwrap().is_empty(), "{monto}: no marca nada");
+    }
+}
+
+#[test]
+fn viva_dealer_saldo_lee_formas_probables() {
+    let r = Receta::desde_yaml(include_str!("../../../../recetas/viva-dealer-saldo.yaml")).unwrap();
+    assert_eq!((r.accion.as_deref(), r.chip_tipo.as_deref()), (Some("saldo_dealer"), Some("dealer")));
+    let re = regex::Regex::new(&r.salida["saldo_dealer"]).unwrap();
+    let leer = |t: &str| re.captures(t).map(|c| c[1].to_string());
+    assert_eq!(leer("Saldo: Bs 120.50").as_deref(), Some("120.50"));
+    assert_eq!(leer("Su saldo es de 35 Bs").as_deref(), Some("35"));
+    assert_eq!(leer("SALDO Bs:0.00").as_deref(), Some("0.00"));
+    assert_eq!(leer("1. Saldo\n2. Recargas"), None, "un menú no es un saldo");
+}
+
+#[tokio::test]
 async fn monto_entero_con_centavos_no_corre() {
     let y = "nombre: x\nparametros:\n  - { nombre: monto }\npasos:\n  - marcar: '*1*{monto_entero}#'\n";
     let r = Receta::desde_yaml(y).unwrap();

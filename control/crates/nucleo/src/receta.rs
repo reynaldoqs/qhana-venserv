@@ -415,8 +415,8 @@ impl Receta {
                     continue;
                 }
             };
-            if paso.mueve_dinero && !matches!(a, Accion::Enviar(_)) {
-                err(n, Some("mueve_dinero"), "'mueve_dinero' solo va en un paso 'enviar'".into());
+            if paso.mueve_dinero && !matches!(a, Accion::Enviar(_) | Accion::Marcar(_)) {
+                err(n, Some("mueve_dinero"), "'mueve_dinero' solo va en un paso 'enviar' o 'marcar'".into());
             }
             if i == 0 && !matches!(a, Accion::Marcar(_)) {
                 err(n, Some(a.nombre()), "el primer paso debe ser 'marcar'".into());
@@ -653,9 +653,12 @@ mod tests {
     }
 
     #[test]
-    fn mueve_dinero_solo_en_enviar() {
-        let y = "nombre: x\npasos:\n  - marcar: '*1#'\n    mueve_dinero: true\n";
+    fn mueve_dinero_solo_en_enviar_o_marcar() {
+        let y = "nombre: x\npasos:\n  - marcar: '*1#'\n  - elegir: 'Si'\n    mueve_dinero: true\n";
         assert!(Receta::desde_yaml(y).unwrap_err().contains("mueve_dinero"));
+        // Un código que opera de una vez (sin confirmación) sí puede ir en `marcar`.
+        let y = "nombre: x\npasos:\n  - marcar: '*1#'\n    mueve_dinero: true\n    exito: 'ok'\n";
+        assert_eq!(Receta::desde_yaml(y).unwrap().paso_que_mueve_dinero(), Some(0));
     }
 
     #[test]

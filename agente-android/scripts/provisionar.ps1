@@ -27,7 +27,7 @@ Write-Host "== instalando $Apk"
 A install -r -g $Apk | Out-Null
 
 Write-Host "== permisos"
-foreach ($p in "CALL_PHONE","READ_PHONE_STATE","READ_PHONE_NUMBERS","RECEIVE_SMS","READ_SMS","POST_NOTIFICATIONS") {
+foreach ($p in "CALL_PHONE","READ_PHONE_STATE","READ_PHONE_NUMBERS","RECEIVE_SMS","READ_SMS","POST_NOTIFICATIONS","WRITE_SECURE_SETTINGS") {
     try { A shell pm grant $Pkg "android.permission.$p" | Out-Null } catch { Write-Host "   (no se pudo conceder $p)" }
 }
 

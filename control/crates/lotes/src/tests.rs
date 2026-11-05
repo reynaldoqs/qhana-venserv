@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, RwLock};
 use std::time::Duration;
 
-const RECETAS: [&str; 7] = [
+const RECETAS: [&str; 8] = [
     include_str!("../../../recetas/tigo-transferir.yaml"),
     include_str!("../../../recetas/tigo-saldo.yaml"),
     include_str!("../../../recetas/tigo-movimientos.yaml"),
@@ -18,6 +18,7 @@ const RECETAS: [&str; 7] = [
     include_str!("../../../recetas/tigo-dealer-recargar.yaml"),
     include_str!("../../../recetas/tigo-dealer-saldo.yaml"),
     include_str!("../../../recetas/entel-dealer-recargar.yaml"),
+    include_str!("../../../recetas/entel-dealer-saldo.yaml"),
 ];
 
 /// Teléfono falso con chips simulados.
@@ -1458,22 +1459,23 @@ async fn por_operador_recargar_va_solo_a_los_chips_dealer() {
     assert_eq!(fin.progreso.enviado_bs, 4.0);
     // Entel: Bs 0.50 va como 050 y los enteros en Bs (2 → *2#, no *200#).
     let entel: Vec<String> = t2.marcados.lock().unwrap().clone();
-    assert_eq!(entel, ["*133*71234567*050#", "*133*71234568*2#"]);
+    // Antes de recargar consulta su saldo dealer (*133# → 1) para cuadrar después.
+    assert_eq!(entel, ["*133#", "*133*71234567*050#", "*133*71234568*2#"]);
     assert!((t2.linea(0).saldo_dealer - 2.5).abs() < 1e-9);
     assert!((t1.linea(0).saldo_dealer - 8.5).abs() < 1e-9);
     // Los chips normales no se tocaron (ni su saldo principal).
     assert_eq!((t1.linea(1).saldo_principal, t2.linea(1).saldo_principal), (10.0, 10.0));
     assert!(t1.linea(1).movimientos.is_empty() && t2.linea(1).movimientos.is_empty());
 
-    // Verificar: por chip y tipo. El Tigo dealer cuadra con su saldo dealer; el Entel no tiene receta de saldo dealer.
+    // Verificar: por chip y tipo. Los dos dealer cuadran con su saldo dealer; el Entel no tiene PIN y no lo necesita.
     let v = b.lotes.verificar(lote.id).await.unwrap();
     assert_eq!(v.saldo, "dealer", "{v:#?}");
     let tigo = v.chips.iter().find(|c| c.dispositivo == "tel1").unwrap();
     assert_eq!((tigo.saldo.as_str(), tigo.estado, tigo.saldo_inicial, tigo.saldo_actual), ("dealer", EstadoCuadre::Cuadra, Some(10.0), Some(8.5)));
     let entel = v.chips.iter().find(|c| c.dispositivo == "tel2").unwrap();
-    assert_eq!((entel.saldo.as_str(), entel.estado, entel.descontado_esperado), ("dealer", EstadoCuadre::SinDato, 2.5));
-    assert!(v.avisos.iter().any(|a| a.contains("no hay receta de saldo dealer para ENTEL")), "{:?}", v.avisos);
-    assert!(!v.cuadra);
+    assert_eq!((entel.saldo.as_str(), entel.estado, entel.descontado_esperado), ("dealer", EstadoCuadre::Cuadra, 2.5), "{v:#?}");
+    assert_eq!((entel.saldo_inicial, entel.saldo_actual), (Some(5.0), Some(2.5)));
+    assert!(v.cuadra, "{v:#?}");
 }
 
 #[tokio::test]
@@ -1611,7 +1613,7 @@ async fn origen_de_varios_chips_de_varios_operadores() {
     let usados: Vec<(String, u32)> =
         filas(&fin).iter().flat_map(|f| f.envios.iter()).map(|e| (e.dispositivo.clone().unwrap(), e.slot.unwrap())).collect();
     assert!(usados.iter().all(|(_, sl)| *sl == 0), "{usados:?}");
-    assert_eq!(*t2.marcados.lock().unwrap(), ["*133*71234567*050#", "*133*71234567*3#"]);
+    assert_eq!(*t2.marcados.lock().unwrap(), ["*133#", "*133*71234567*050#", "*133*71234567*3#"]);
     assert!((t1.linea(0).saldo_dealer - (10.0 - 1.7)).abs() < 1e-9);
 
     // Un solo operador entre los elegidos: el CSV puede ser solo numero,monto.

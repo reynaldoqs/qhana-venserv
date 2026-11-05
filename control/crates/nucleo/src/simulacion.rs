@@ -351,7 +351,11 @@ impl LineaSimulada {
                 _ => self.cerrar("Opcion invalida"),
             },
             Paso::EntelMenu => match r {
-                "1" => self.cerrar(format!("Su saldo para transferencia es de {} Bs.", bs(self.saldo_principal))),
+                // Texto inventado con la forma de la respuesta a una recarga dealer; un dealer muestra su saldo dealer.
+                "1" => {
+                    let s = if self.dealer_entel { self.saldo_dealer } else { self.saldo_principal };
+                    self.cerrar(format!("Su saldo actual para transferencia es de Bs. {s:.2}"))
+                }
                 "2" => self.cerrar(format!("Su saldo pre-pago es de {} Bs.", bs(self.saldo_principal))),
                 "3" => self.abrir(
                     Paso::EntelConsulta,

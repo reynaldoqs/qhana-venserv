@@ -56,6 +56,7 @@ class AgenteService : Service() {
     private var ultimasSims: List<Sim> = emptyList()
     private var escuchaSims: SubscriptionManager.OnSubscriptionsChangedListener? = null
     private var cpuDespierta: PowerManager.WakeLock? = null
+    private lateinit var reparador: ReparadorAccesibilidad
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -75,8 +76,10 @@ class AgenteService : Service() {
         escucharSims()
         BusSms.cargar(this) // lo que quedó sin enviar antes de que muriera el proceso
         scope.launch { BusSms.avisos.collect { enviarSms() } }
+        reparador = ReparadorAccesibilidad(applicationContext)
         scope.launch {
             while (isActive) {
+                reparador.revisar()
                 refrescar(soloSiCambia = true)
                 delay(30_000)
             }
